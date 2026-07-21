@@ -1,56 +1,93 @@
-# Welcome to your Expo app 👋
+# react-native-demo
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+An [Expo](https://expo.dev) (SDK 57) app using [expo-router](https://docs.expo.dev/router/introduction).
 
-## Get started
+This project uses Expo's **managed workflow** with **Continuous Native Generation (CNG)**: the
+native `ios/` and `android/` directories are *generated* from `app.json` and config plugins via
+`expo prebuild` rather than edited by hand. This README documents how to generate the native iOS
+project and run it on a **physical device** through Xcode.
 
-1. Install dependencies
+---
 
-   ```bash
-   npm install
-   ```
+## Prerequisites
 
-2. Start the app
+| Tool | Version used | Install |
+| --- | --- | --- |
+| Node.js | v24 | https://nodejs.org (or `nvm`) |
+| Xcode | 26.x | Mac App Store |
+| CocoaPods | 1.17.0 | `brew install cocoapods` |
+| Apple ID / Developer account | — | Xcode → Settings → Accounts (free ID works for on-device testing) |
 
-   ```bash
-   npx expo start
-   ```
+> `bundleIdentifier` is set to **`ai.plaud.reactnativedemo`** in `app.json` (`expo.ios.bundleIdentifier`).
+> Change it there — not in Xcode — so it survives regeneration.
 
-In the output, you'll find options to open the app in a
+---
 
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
+## Build & run on a physical device
 
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
-
-## Get a fresh project
-
-When you're ready, run:
+### 1. Install JS dependencies
 
 ```bash
-npm run reset-project
+npm install
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+### 2. Install CocoaPods (one-time, machine-wide)
 
-### Other setup steps
+CocoaPods integrates the native iOS dependencies. Installed via Homebrew:
 
-- To set up ESLint for linting, run `npx expo lint`, or follow our guide on ["Using ESLint and Prettier"](https://docs.expo.dev/guides/using-eslint/)
-- If you'd like to set up unit testing, follow our guide on ["Unit Testing with Jest"](https://docs.expo.dev/develop/unit-testing/)
-- Learn more about the TypeScript setup in this template in our guide on ["Using TypeScript"](https://docs.expo.dev/guides/typescript/)
+```bash
+brew install cocoapods
+```
 
-## Learn more
+### 3. Generate the native iOS project (prebuild)
 
-To learn more about developing your project with Expo, look at the following resources:
+This creates the `ios/` directory (Xcode project + workspace) from `app.json` and runs
+`pod install` automatically:
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+```bash
+npx expo prebuild -p ios
+```
 
-## Join the community
+Re-run this any time you change native config in `app.json` (bundle id, icons, plugins,
+permissions, etc.). The `ios/` directory is generated output — prefer regenerating over
+hand-editing.
 
-Join our community of developers creating universal apps.
+### 4. Open the workspace in Xcode
 
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+```bash
+open ios/reactnativedemo.xcworkspace
+```
+
+⚠️ Always open the **`.xcworkspace`**, never the `.xcodeproj` — CocoaPods requires the workspace.
+
+---
+
+## Everyday development
+
+Once the app is installed on the device, you usually just need the JS dev server running:
+
+```bash
+npx expo start          # then press the device/simulator options in the terminal
+# or
+npm run ios             # build + run on iOS
+npm run android         # build + run on Android
+npm run web             # run in the browser
+```
+
+Edit files inside the **app** directory — this project uses
+[file-based routing](https://docs.expo.dev/router/introduction).
+
+Lint:
+
+```bash
+npx expo lint
+```
+
+---
+
+## Notes
+
+- **`ios/` is git-ignored generated output.** Don't commit hand edits; make native changes in
+  `app.json` / config plugins and re-run prebuild.
+- This project targets **Expo SDK 57** — read the versioned docs at
+  https://docs.expo.dev/versions/v57.0.0/ before writing native or config code.
