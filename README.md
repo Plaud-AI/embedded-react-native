@@ -2,19 +2,7 @@
 
 A local [Expo module](https://docs.expo.dev/modules/overview/) that bridges Plaud's native
 iOS device SDK into React Native. It exposes BLE scan/connect, on-device recording events,
-file listing, and audio export to JavaScript — the RN counterpart of the Capacitor `PlaudSdk`
-plugin.
-
-```
-embedded-react-native/
-├── modules/
-│   └── plaud-sdk/          ← the reusable module (copy this into your app)
-│       ├── expo-module.config.json
-│       ├── index.ts
-│       ├── src/            ← JS layer (typed API + platform guard)
-│       └── ios/            ← Swift bridge + vendored Plaud xcframeworks
-└── react-native-demo/      ← a working Expo app that consumes the module
-```
+file listing, and audio export to JavaScript.
 
 - **`modules/plaud-sdk/`** — the module itself. This is the piece you drop into another
   project. See `modules/plaud-sdk/README.md` for the terse module-level notes.
@@ -38,13 +26,6 @@ events travel back up.
  │                             │  degrades to a no-op Proxy off-iOS
  └─────────────────────────────┘
         │  Expo Modules bridge (AsyncFunction / Events)
-        ▼
- ┌─────────────────────────────┐
- │ Swift layer                 │  PlaudSdkModule + PlaudSdkController
- │ (ios/PlaudSdkModule.swift)  │  delegate → sendEvent() back to JS
- └─────────────────────────────┘
-        │  calls PlaudDeviceAgent
-        ▼
  ┌─────────────────────────────┐
  │ Plaud native SDK            │  three precompiled .xcframeworks
  │ (ios/Frameworks/*)          │  BLE / Device / WiFi
@@ -61,63 +42,10 @@ matter:
   a `Proxy` whose methods reject and whose `addListener` is a harmless no-op, so shared code
   doesn't need platform branches everywhere.
 
-**2. Swift layer (`ios/PlaudSdkModule.swift`).**
-`PlaudSdkModule` is an Expo `Module`. Its `definition()` declares the `AsyncFunction`s
-(`initSDK`, `startScan`, `connectBleDevice`, `getFileList`, `exportAudio`, …) and the `Events`
-it can emit. Because an Expo `Module` isn't `NSObject`-derived, it can't be the Plaud SDK's
-Objective-C delegate itself — so all SDK interaction lives in `PlaudSdkController` (an
-`NSObject` conforming to `PlaudDeviceAgentProtocol`). The controller talks to
-`PlaudDeviceAgent.shared`, and forwards every delegate callback to JS through a closure that
-calls `sendEvent` **on the main queue** (SDK callbacks can arrive on arbitrary threads).
-
-**3. Plaud native SDK (`ios/Frameworks/*.xcframework`).**
+**2. Plaud native SDK (`ios/Frameworks/*.xcframework`).**
 Three precompiled binary frameworks — `PlaudBleSDK`, `PlaudDeviceBasicSDK`, `PlaudWiFiSDK` —
 vendored by `ios/PlaudSdk.podspec` (`vendored_frameworks`). CocoaPods embeds and code-signs
 them automatically; there are no Podfile or Xcode edits to make by hand.
-
-### Autolinking (no Podfile edits)
-
-Expo autolinks local modules. During `expo prebuild` / `pod install`, `use_expo_modules!`
-scans the app's module search paths, finds any folder with an `expo-module.config.json`, and
-links it. This module's config registers the Swift module:
-
-```json
-{ "platforms": ["apple"], "apple": { "modules": ["PlaudSdkModule"] } }
-```
-
-So integrating the module is mostly *placing the folder where Expo looks* and rebuilding —
-covered below.
-
-### Command / event split
-
-Imperative actions are **promise-returning methods**; results and device-initiated activity
-arrive as **events**. For example, `connectBleDevice()` resolves as soon as the connect is
-*dispatched*; the actual connection outcome shows up later on the `connectState` event. Design
-your UI around the event stream, not the method return values.
-
-| Method (JS → native)                          | What it does                                                    |
-| --------------------------------------------- | -------------------------------------------------------------- |
-| `initSDK({ userAccessToken, customDomain, userId? })` | Initialise the SDK with a per-user JWT. `customDomain` is domain-only (no `https://`). |
-| `startScan()` / `stopScan()`                  | BLE scan. Scan waits for Bluetooth to power on before firing.   |
-| `connectBleDevice({ uuid?, serialNumber?, deviceToken? })` | Connect to a scanned device. Defaults `deviceToken` to `userId` so the handshake binds the device to the user. |
-| `disconnect()`                                | Drop the current connection.                                    |
-| `depair({ clear? })`                          | Unpair; `clear: true` (default) also wipes local pairing state. Result via `depair` event. |
-| `isConnected()`                               | `Promise<{ connected: boolean }>`.                              |
-| `getFileList({ startSessionId? })`            | Request recordings — results arrive on the `fileList` event.    |
-| `exportAudio({ sessionId, format?, channels? })` | Decode a recording to `Documents/PlaudExports`. Resolves `{ sessionId, outputPath }`; emits `exportProgress`. `format` defaults to `mp3`. |
-
-| Event                                    | Fires when                                              |
-| ---------------------------------------- | ------------------------------------------------------- |
-| `scanResult`                             | Devices discovered (`{ devices: PlaudScanDevice[] }`).  |
-| `scanTimeout`                            | Scan ended without result (e.g. Bluetooth off).         |
-| `connectState`                           | Connection state changed (`connected` / `failed` / raw `state`). |
-| `penState` / `bind`                      | Device state / bind handshake updates.                  |
-| `fileList`                               | Response to `getFileList` (`{ files: PlaudFile[] }`).   |
-| `exportProgress`                         | Progress during `exportAudio` (`{ sessionId, progress, message }`). |
-| `recordStart` / `recordStop` / `recordPause` / `recordResume` | Device-initiated recording (physical button / VAD). |
-| `depair`                                 | Unpair completed.                                        |
-
-Every method and event is fully typed — see `modules/plaud-sdk/src/PlaudSdk.types.ts`.
 
 ---
 
