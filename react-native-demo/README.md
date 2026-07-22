@@ -67,11 +67,7 @@ open ios/reactnativedemo.xcworkspace
 Once the app is installed on the device, you usually just need the JS dev server running:
 
 ```bash
-npx expo start          # then press the device/simulator options in the terminal
-# or
-npm run ios             # build + run on iOS
-npm run android         # build + run on Android
-npm run web             # run in the browser
+npm run ios
 ```
 
 Edit files inside the **app** directory — this project uses

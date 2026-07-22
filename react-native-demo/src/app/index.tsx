@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { File } from 'expo-file-system';
+import { useEffect, useState } from 'react';
 import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -7,26 +8,30 @@ import { FileModal } from '@/components/plaud/file-modal';
 import { Icon } from '@/components/plaud/icon';
 import type { FileResult, PlaudFile, PlaudScanDevice } from '@/components/plaud/types';
 import { BottomTabInset, MaxContentWidth, PlaudColors, Spacing } from '@/constants/theme';
+import { transcribeExportedFile } from '@/lib/plaud-transcription';
+import { PlaudSdk, isAvailable } from 'plaud-sdk';
 
 const PLAUD_DOMAIN = 'platform-us.plaud.ai';
 const USER_ID = 'jackmu';
 
-// --- Mock data (stands in for the native Plaud SDK, not yet wired up) ---
-const MOCK_DEVICES: PlaudScanDevice[] = [
-  { name: 'Plaud Note Pro', serialNumber: 'PN-4823', uuid: 'uuid-note-pro' },
-  { name: 'Plaud NotePin', serialNumber: 'NP-1150', uuid: 'uuid-notepin' },
-];
+const errMessage = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
-const MOCK_FILES: PlaudFile[] = [
-  { sessionId: 1042, duration: 342, size: 5_242_880 },
-  { sessionId: 1041, duration: 128, size: 1_998_848 },
-  { sessionId: 1039, duration: 74, size: 1_146_880 },
-];
-
-const MOCK_TRANSCRIPT =
-  "Okay, so for the Q3 roadmap, the two big rocks are the native SDK bridge and the " +
-  'transcription pipeline. Let’s get the export flow stable first, then layer streaming ' +
-  'on top. I’ll circle back with the team on timelines by Friday.';
+/**
+ * Mint the per-user Plaud JWT that `initSDK` requires. In the Capacitor demo the Next.js
+ * web app minted this server-side; here it's an app/backend concern.
+ *
+ * TODO(plaud): wire this to your token endpoint. For local dev, set
+ * `EXPO_PUBLIC_PLAUD_ACCESS_TOKEN` in a `.env` file (Expo inlines `EXPO_PUBLIC_*` at build).
+ */
+async function getUserAccessToken(): Promise<string> {
+  const token = process.env.EXPO_PUBLIC_PLAUD_ACCESS_TOKEN;
+  if (!token) {
+    throw new Error(
+      'No Plaud access token — set EXPO_PUBLIC_PLAUD_ACCESS_TOKEN or wire a mint endpoint in getUserAccessToken().',
+    );
+  }
+  return token;
+}
 
 export default function Home() {
   const [devices, setDevices] = useState<PlaudScanDevice[]>([]);
@@ -41,21 +46,90 @@ export default function Home() {
   const [results, setResults] = useState<Record<number, FileResult>>({});
   const [openSessionId, setOpenSessionId] = useState<number | null>(null);
 
-  const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
-  const later = useCallback((fn: () => void, ms: number) => {
-    timers.current.push(setTimeout(fn, ms));
-  }, []);
-
-  // Simulate minting the per-user access token on mount.
-  useEffect(() => {
-    const t = setTimeout(() => setTokenReady(true), 500);
-    return () => clearTimeout(t);
-  }, []);
-
-  useEffect(() => () => timers.current.forEach(clearTimeout), []);
-
   const updateResult = (sessionId: number, patch: Partial<FileResult>) =>
     setResults((prev) => ({ ...prev, [sessionId]: { ...prev[sessionId], ...patch } }));
+
+  // Initialise the native SDK once, after minting the per-user token.
+  useEffect(() => {
+    if (!isAvailable) {
+      setError('Plaud native module unavailable — run a dev build on a physical iOS device.');
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const userAccessToken = await getUserAccessToken();
+        await PlaudSdk.initSDK({ userAccessToken, customDomain: PLAUD_DOMAIN, userId: USER_ID });
+        if (!cancelled) setTokenReady(true);
+      } catch (e) {
+        if (!cancelled) setError(`SDK init failed: ${errMessage(e)}`);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Subscribe to the native event stream. Every listener drives a piece of screen state.
+  useEffect(() => {
+    if (!isAvailable) return;
+
+    const subs = [
+      PlaudSdk.addListener('scanResult', ({ devices: found }) => setDevices(found)),
+      PlaudSdk.addListener('scanTimeout', ({ reason } = {}) => {
+        setScanning(false);
+        if (reason === 'bluetoothNotPoweredOn') {
+          setError(
+            'Bluetooth isn’t available — enable Bluetooth and grant the app permission, then try again.',
+          );
+        }
+      }),
+      PlaudSdk.addListener('connectState', ({ connected: isConn, failed }) => {
+        if (isConn) {
+          setConnected(true);
+          setScanning(false);
+          PlaudSdk.getFileList().catch((e) => setError(`getFileList failed: ${errMessage(e)}`));
+        } else if (failed) {
+          setScanning(false);
+          setError('Connection failed — move the device closer and try again.');
+        } else {
+          setConnected(false);
+        }
+      }),
+      PlaudSdk.addListener('fileList', ({ files: found }) => setFiles(found)),
+      PlaudSdk.addListener('recordStart', ({ sessionId, scene }) => {
+        setIsLive(true);
+        setRecording(`Recording · session ${sessionId} · scene ${scene}`);
+      }),
+      PlaudSdk.addListener('recordResume', ({ sessionId }) => {
+        setIsLive(true);
+        setRecording(`Recording · session ${sessionId}`);
+      }),
+      PlaudSdk.addListener('recordStop', ({ sessionId, fileSize }) => {
+        setIsLive(false);
+        setRecording(`Stopped · session ${sessionId} · ${(fileSize / 1024).toFixed(0)} KB`);
+        // A new recording just landed — refresh the on-device list.
+        PlaudSdk.getFileList().catch(() => {});
+      }),
+      PlaudSdk.addListener('recordPause', ({ sessionId }) => {
+        setIsLive(false);
+        setRecording(`Paused · session ${sessionId}`);
+      }),
+      PlaudSdk.addListener('exportProgress', ({ sessionId, progress, message }) => {
+        updateResult(sessionId, { exportInfo: `${progress}% ${message}` });
+      }),
+      PlaudSdk.addListener('depair', () => {
+        setConnected(false);
+        setDevices([]);
+        setFiles([]);
+        setRecording(null);
+        setIsLive(false);
+        setResults({});
+        setOpenSessionId(null);
+      }),
+    ];
+    return () => subs.forEach((s) => s.remove());
+  }, []);
 
   const handleScan = () => {
     setError(null);
@@ -65,28 +139,19 @@ export default function Home() {
     }
     setDevices([]);
     setScanning(true);
-    // Devices trickle in from the BLE scan.
-    later(() => setDevices([MOCK_DEVICES[0]]), 700);
-    later(() => setDevices(MOCK_DEVICES), 1400);
+    PlaudSdk.startScan().catch((e) => {
+      setScanning(false);
+      setError(`Scan failed: ${errMessage(e)}`);
+    });
   };
 
-  const handleConnect = (_d: PlaudScanDevice) => {
+  const handleConnect = (d: PlaudScanDevice) => {
     setError(null);
-    setScanning(false);
-    setConnected(true);
-    setFiles(MOCK_FILES);
-
-    // Recording is driven by the physical device — simulate a capture arriving
-    // shortly after connect so the live banner is visible.
-    later(() => {
-      setIsLive(true);
-      setRecording('Recording · session 1043 · scene meeting');
-    }, 900);
-    later(() => {
-      setIsLive(false);
-      setRecording('Stopped · session 1043 · 812 KB');
-      setFiles((prev) => [{ sessionId: 1043, duration: 52, size: 831_488 }, ...prev]);
-    }, 4400);
+    // Connection progress arrives via the `connectState` event (which flips `connected`
+    // and loads the file list). Identify the device by uuid from the scan result.
+    PlaudSdk.connectBleDevice({ uuid: d.uuid }).catch((e) =>
+      setError(`Connect failed: ${errMessage(e)}`),
+    );
   };
 
   const handleDepair = () => {
@@ -95,20 +160,14 @@ export default function Home() {
       {
         text: 'Unpair',
         style: 'destructive',
-        onPress: () => {
-          setConnected(false);
-          setDevices([]);
-          setFiles([]);
-          setRecording(null);
-          setIsLive(false);
-          setResults({});
-          setOpenSessionId(null);
-        },
+        // State resets when the native `depair` event arrives.
+        onPress: () =>
+          PlaudSdk.depair({ clear: true }).catch((e) => setError(`Unpair failed: ${errMessage(e)}`)),
       },
     ]);
   };
 
-  const exportAndTranscribe = (f: PlaudFile) => {
+  const exportAndTranscribe = async (f: PlaudFile) => {
     setError(null);
     updateResult(f.sessionId, {
       status: 'exporting',
@@ -118,30 +177,41 @@ export default function Home() {
       transcribeStatus: undefined,
       src: undefined,
     });
-    later(() => updateResult(f.sessionId, { exportInfo: '48% decoding…' }), 500);
-    later(
-      () =>
-        updateResult(f.sessionId, {
-          status: 'transcribing',
-          src: 'mock://exported.mp3',
-          exportInfo: 'saved → exported.mp3',
-          transcribeStatus: 'uploading to Plaud… 100%',
-        }),
-      1200,
-    );
-    later(
-      () => updateResult(f.sessionId, { transcribeStatus: 'transcribing… (processing)' }),
-      1900,
-    );
-    later(
-      () =>
-        updateResult(f.sessionId, {
-          status: 'ready',
-          transcribeStatus: 'transcription complete',
-          transcript: MOCK_TRANSCRIPT,
-        }),
-      3000,
-    );
+    try {
+      // Native: decode the recording to an mp3 in Documents/PlaudExports. `exportProgress`
+      // events update exportInfo along the way.
+      const { outputPath } = await PlaudSdk.exportAudio({ sessionId: f.sessionId, format: 'mp3' });
+      const uri = outputPath.startsWith('file://') ? outputPath : `file://${outputPath}`;
+      const name = outputPath.split('/').pop() ?? 'export.mp3';
+      let sizeLabel = '';
+      try {
+        const size = new File(uri).size;
+        if (size != null) sizeLabel = ` (${(size / 1024).toFixed(0)} KB)`;
+      } catch {
+        // size is best-effort; the export itself already succeeded.
+      }
+      updateResult(f.sessionId, {
+        status: 'transcribing',
+        src: uri,
+        exportInfo: `saved → ${name}${sizeLabel}`,
+        transcribeStatus: 'preparing upload…',
+      });
+
+      // Upload the exported file to Plaud and poll for the transcript. ⚠️ DEMO ONLY — this
+      // calls the Plaud platform API straight from the device with EXPO_PUBLIC_ credentials;
+      // in production that upload/transcribe belongs behind a backend (see the Capacitor app).
+      const userAccessToken = await getUserAccessToken();
+      const transcript = await transcribeExportedFile(uri, userAccessToken, (msg) =>
+        updateResult(f.sessionId, { transcribeStatus: msg }),
+      );
+      updateResult(f.sessionId, {
+        status: 'ready',
+        transcribeStatus: 'transcription complete',
+        transcript,
+      });
+    } catch (e) {
+      updateResult(f.sessionId, { status: 'error', error: errMessage(e) });
+    }
   };
 
   const handleFileClick = (f: PlaudFile) => {
@@ -152,7 +222,7 @@ export default function Home() {
 
   const handleRefreshFiles = () => {
     setError(null);
-    setFiles(files.length ? files : MOCK_FILES);
+    PlaudSdk.getFileList().catch((e) => setError(`getFileList failed: ${errMessage(e)}`));
   };
 
   const openFile = openSessionId != null ? files.find((x) => x.sessionId === openSessionId) : null;
