@@ -23,7 +23,7 @@ export function FileModal({
     <Modal visible transparent animationType="slide" onRequestClose={onClose}>
       <Pressable style={styles.backdrop} onPress={onClose}>
         {/* Stop taps inside the card from closing the modal. */}
-        <Pressable style={styles.cardWrap} onPress={() => {}}>
+        <Pressable style={styles.cardWrap} onPress={() => { }}>
           <DevCard style={styles.card}>
             {/* Header */}
             <View style={styles.header}>
@@ -38,21 +38,6 @@ export function FileModal({
                 <Icon name="close" size={22} color={PlaudColors.textDim} />
               </Pressable>
             </View>
-
-            {/* Audio — available once the export finishes. */}
-            {result?.src ? (
-              <View style={styles.audio}>
-                <Icon name="play" size={30} color={PlaudColors.textLight} />
-                <View style={styles.audioTrack} />
-                <Mono style={styles.audioTime}>{file.duration}s</Mono>
-              </View>
-            ) : (
-              <View style={styles.placeholder}>
-                <Text style={styles.placeholderText}>
-                  {status === 'error' ? 'Export failed.' : 'Exporting audio…'}
-                </Text>
-              </View>
-            )}
 
             {/* Progress line while exporting / transcribing. */}
             {busy && result?.transcribeStatus && (
