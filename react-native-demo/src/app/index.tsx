@@ -8,6 +8,7 @@ import { FileModal } from '@/components/plaud/file-modal';
 import { Icon } from '@/components/plaud/icon';
 import type { FileResult, PlaudFile, PlaudScanDevice } from '@/components/plaud/types';
 import { BottomTabInset, MaxContentWidth, PlaudColors, Spacing } from '@/constants/theme';
+import { transcribeExportedFile } from '@/lib/plaud-transcription';
 import { PlaudSdk, isAvailable } from 'plaud-sdk';
 
 const PLAUD_DOMAIN = 'platform-us.plaud.ai';
@@ -193,19 +194,20 @@ export default function Home() {
         status: 'transcribing',
         src: uri,
         exportInfo: `saved → ${name}${sizeLabel}`,
-        transcribeStatus: 'export complete',
+        transcribeStatus: 'preparing upload…',
       });
 
-      // TODO(plaud): transcription is an app-level step, not part of the native SDK bridge —
-      // the Capacitor demo uploaded the exported file to the Plaud platform API (presigned
-      // multipart PUT) and polled for the transcript. Wire that here using `fetch` + the
-      // exported file at `uri`. Until then, surface that the native export half works.
+      // Upload the exported file to Plaud and poll for the transcript. ⚠️ DEMO ONLY — this
+      // calls the Plaud platform API straight from the device with EXPO_PUBLIC_ credentials;
+      // in production that upload/transcribe belongs behind a backend (see the Capacitor app).
+      const userAccessToken = await getUserAccessToken();
+      const transcript = await transcribeExportedFile(uri, userAccessToken, (msg) =>
+        updateResult(f.sessionId, { transcribeStatus: msg }),
+      );
       updateResult(f.sessionId, {
         status: 'ready',
-        transcribeStatus: 'export complete — wire transcription to the Plaud platform API',
-        transcript:
-          `Exported session #${f.sessionId} to ${name}${sizeLabel}. ` +
-          'Transcription is an app-level step: upload this file to Plaud and poll for the result.',
+        transcribeStatus: 'transcription complete',
+        transcript,
       });
     } catch (e) {
       updateResult(f.sessionId, { status: 'error', error: errMessage(e) });
