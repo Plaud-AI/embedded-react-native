@@ -75,7 +75,14 @@ export default function Home() {
 
     const subs = [
       PlaudSdk.addListener('scanResult', ({ devices: found }) => setDevices(found)),
-      PlaudSdk.addListener('scanTimeout', () => setScanning(false)),
+      PlaudSdk.addListener('scanTimeout', ({ reason } = {}) => {
+        setScanning(false);
+        if (reason === 'bluetoothNotPoweredOn') {
+          setError(
+            'Bluetooth isn’t available — enable Bluetooth and grant the app permission, then try again.',
+          );
+        }
+      }),
       PlaudSdk.addListener('connectState', ({ connected: isConn, failed }) => {
         if (isConn) {
           setConnected(true);

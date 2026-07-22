@@ -75,16 +75,16 @@ public class PlaudSdkModule: Module {
       self.controller.disconnect(promise: promise)
     }
 
-    AsyncFunction("depair") { (options: DepairOptions, promise: Promise) in
-      self.controller.depair(options, promise: promise)
+    AsyncFunction("depair") { (options: DepairOptions?, promise: Promise) in
+      self.controller.depair(options ?? DepairOptions(), promise: promise)
     }
 
     AsyncFunction("isConnected") { (promise: Promise) in
       self.controller.isConnected(promise: promise)
     }
 
-    AsyncFunction("getFileList") { (options: FileListOptions, promise: Promise) in
-      self.controller.getFileList(options, promise: promise)
+    AsyncFunction("getFileList") { (options: FileListOptions?, promise: Promise) in
+      self.controller.getFileList(options ?? FileListOptions(), promise: promise)
     }
 
     AsyncFunction("exportAudio") { (options: ExportOptions, promise: Promise) in
