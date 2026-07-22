@@ -1,0 +1,9 @@
+{
+  "name": "plaud-sdk",
+  "version": "1.0.0",
+  "description": "Local Expo module bridging Plaud's native iOS device SDK (BLE connect, file list, on-device audio export).",
+  "main": "index.ts",
+  "author": "Plaud",
+  "license": "UNLICENSED",
+  "private": true
+}
