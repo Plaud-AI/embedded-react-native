@@ -101,24 +101,25 @@ Place the module where Expo autolinking looks — a `modules/` folder at your pr
 cp -R modules/plaud-sdk /path/to/your-app/modules/plaud-sdk
 ```
 
-Then reference it from your app's `package.json` so Metro and TypeScript resolve the
-`plaud-sdk` import to the local folder:
+The module's `expo-module.config.json` is what makes autolinking pick it up, so Metro and the
+native build resolve the `plaud-sdk` import automatically.
+
+The one thing to add is a TypeScript path mapping so
+the `import { PlaudSdk } from 'plaud-sdk'` type-resolves. In your app's `tsconfig.json`:
 
 ```jsonc
-// your-app/package.json
+// your-app/tsconfig.json
 {
-  "dependencies": {
-    "plaud-sdk": "file:./modules/plaud-sdk"
+  "compilerOptions": {
+    "paths": {
+      "plaud-sdk": ["./modules/plaud-sdk"]
+    }
   }
 }
 ```
 
-```bash
-npm install
-```
-
-> The module's `expo-module.config.json` is what makes autolinking pick it up — no manual
-> native linking, no Podfile edits.
+> No `npm install` is needed for the module — it isn't an installed package. Autolinking
+> discovers it from `modules/` at prebuild/build time.
 
 ### Step 2: declare BLE permissions in `app.json`
 
