@@ -61,6 +61,36 @@ The Plaud frameworks are **arm64, iOS 15+, device-only**. There is **no simulato
 
 ---
 
+## Running the Demo App
+
+The demo app is included in the Plaud Embedded Module as reference for implementing the module in your own app and seeing how the module works.
+
+### 1. Clone the Embedded React Native repo
+```bash
+git clone https://github.com/Plaud-AI/embedded-react-native.git
+```
+
+### 2. Install dependencies and set up env vars
+```bash
+cd react-native-demo
+npm i
+brew install cocoapods #if not already installed
+cp .env.example .env
+```
+
+You can retrieve your environment credentials from the [developer portal](https://portal.plaud.ai) and retrieve a token from our [API playground](https://plaud-embedded-playground.vercel.app)
+
+### 3. Build and open in XCode
+```bash
+npx expo prebuild -p ios
+open ios/reactnativedemo.xcworkspace
+```
+In XCode, make sure to include your Apple developer credentials and certificate. 
+
+Then **run on a physical device** to test out the demo app with your Plaud devices.
+
+---
+
 ## Implementing the module in an existing React Native project
 
 The module is built on Expo's module system, so the smoothest path is an Expo (or
