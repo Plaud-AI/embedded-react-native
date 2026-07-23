@@ -76,14 +76,21 @@ infrastructure installed first.
 | CocoaPods                     | `brew install cocoapods`                          |
 | An Expo-based RN app          | Expo SDK 52+ recommended (this repo uses SDK 57)  |
 
-### Step 0 (bare RN only): add Expo Modules support
-
 Skip this if your app already uses Expo. For a bare React Native app, install the Expo Modules
 runtime once — it's what provides `requireNativeModule` and the autolinking `PlaudSdk`
 depends on:
 
 ```bash
 npx install-expo-modules@latest
+```
+
+### Step 0: Install the skill from this repo
+
+The Skill has context on the Plaud Embedded plugin to help you implement this 
+plugin for your react-native app.
+
+```bash
+npx skills add Plaud-AI/embedded-react-native
 ```
 
 ### Step 1: copy the module into your app
