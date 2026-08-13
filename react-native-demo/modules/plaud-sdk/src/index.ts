@@ -5,7 +5,7 @@ export * from './PlaudSdk.types';
 
 let nativeModule: PlaudSdkModule | null = null;
 try {
-  if (Platform.OS === 'ios') {
+  if (Platform.OS === 'ios' || Platform.OS === 'android') {
     nativeModule = requireNativeModule<PlaudSdkModule>('PlaudSdk');
   }
 } catch {

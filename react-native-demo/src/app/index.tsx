@@ -52,7 +52,7 @@ export default function Home() {
   // Initialise the native SDK once, after minting the per-user token.
   useEffect(() => {
     if (!isAvailable) {
-      setError('Plaud native module unavailable — run a dev build on a physical iOS device.');
+      setError('Plaud native module unavailable — run a dev build on a physical iOS or Android device.');
       return;
     }
     let cancelled = false;

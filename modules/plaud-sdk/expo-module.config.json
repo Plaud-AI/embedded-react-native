@@ -1,6 +1,9 @@
 {
-  "platforms": ["apple"],
+  "platforms": ["apple", "android"],
   "apple": {
     "modules": ["PlaudSdkModule"]
+  },
+  "android": {
+    "modules": ["expo.modules.plaudsdk.PlaudSdkModule"]
   }
 }

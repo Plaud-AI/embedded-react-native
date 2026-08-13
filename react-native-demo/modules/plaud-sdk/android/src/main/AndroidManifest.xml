@@ -1,0 +1,8 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <!--
+    The Bluetooth / location permissions the SDK needs are declared by plaud-sdk.aar's own
+    manifest and reach the app through manifest merging, so they are not repeated here.
+    They still have to be *granted* at runtime on Android 12+ — PlaudSdkModule.startScan()
+    requests them via `requestPermissions()` before it touches the SDK.
+  -->
+</manifest>
