@@ -1,38 +1,100 @@
 # plaud-sdk (local Expo module)
 
-Native iOS bridge to Plaud's device SDK — the React Native counterpart of the Capacitor
-`PlaudSdk` plugin. Exposes BLE connect/scan, on-device file listing, and audio export to JS,
-plus an event stream for scan results, connection state, device-initiated recording, etc.
+Native bridge to Plaud's device SDK on **iOS and Android** — the React Native counterpart of
+the Capacitor `PlaudSdk` plugin. Exposes BLE scan/connect, on-device file listing, and audio
+export to JS, plus an event stream for scan results, connection state, device-initiated
+recording, etc.
+
+Both platforms implement the **same JS surface, event names and payload shapes**
+(`src/PlaudSdk.types.ts` describes both), so app code needs no platform branches.
+
+| | iOS | Android |
+|---|---|---|
+| Native source | `ios/PlaudSdkModule.swift` | `android/src/main/java/expo/modules/plaudsdk/PlaudSdkModule.kt` |
+| Vendored SDK | `ios/Frameworks/*.xcframework` (3) | `android/libs/plaud-sdk.aar` |
+| Registered by | `expo-module.config.json` → `apple.modules` | `expo-module.config.json` → `android.modules` |
+| SDK entry point | `PlaudDeviceAgent.shared` | `sdk.PlaudDeviceAgent` (Kotlin object) |
 
 ## How it's wired
-- **Autolinked** via `use_expo_modules!` — Expo scans `./modules` during prebuild, so no
-  Podfile or Xcode edits are needed. `expo-module.config.json` registers `PlaudSdkModule`.
-- The Plaud SDK ships as three precompiled `.xcframework`s in `ios/Frameworks/`
-  (`PlaudBleSDK`, `PlaudDeviceBasicSDK`, `PlaudWiFiSDK`), vendored by `PlaudSdk.podspec`
+
+**Autolinked** — Expo scans `./modules` during prebuild, so there are no Podfile, Xcode,
+`settings.gradle` or `build.gradle` edits to make by hand on either platform.
+
+- **iOS** — the SDK ships as three precompiled `.xcframework`s (`PlaudBleSDK`,
+  `PlaudDeviceBasicSDK`, `PlaudWiFiSDK`) vendored by `PlaudSdk.podspec`
   (`vendored_frameworks`). CocoaPods embeds and code-signs them automatically.
-- BLE permissions (`NSBluetoothAlwaysUsageDescription`, `UIBackgroundModes: bluetooth-central`)
-  live in the app's `app.json` under `ios.infoPlist`, so they survive `expo prebuild`.
+- **Android** — the SDK ships as `android/libs/plaud-sdk.aar`, consumed by
+  `android/build.gradle` via `api fileTree(dir: 'libs', include: ['*.aar'])`. Its native
+  `.so` libraries (`libopus`, `liblame`, `libjni_ogg`, …) are inside the AAR and are packaged
+  automatically for all four ABIs.
 
-## ⚠️ Device only
-The frameworks are **arm64, iOS 15+, device-only** — there is no simulator slice. You must:
-- Run on a **physical iPhone** (`npx expo run:ios --device`), not the simulator.
-- Use a **dev build**, not Expo Go (this is custom native code).
+### ⚠️ The AAR's dependencies are declared by hand
 
-On Android / simulator the JS `PlaudSdk` methods reject and `isAvailable` is `false`.
+`plaud-sdk.aar` is a **bare AAR — it carries no POM**, so Gradle cannot resolve its transitive
+dependencies. Every library its bytecode touches is listed explicitly in
+`android/build.gradle` (Retrofit, OkHttp, Gson, Java-WebSocket, BouncyCastle, Conscrypt,
+Timber, slf4j + logback-android, Guava, coroutines). Miss one and the app compiles fine, then
+dies at runtime with `NoClassDefFoundError`. **If you replace the AAR, re-derive that list.**
+
+### Permissions
+
+- **iOS** — `NSBluetoothAlwaysUsageDescription` and `UIBackgroundModes: bluetooth-central`
+  live in the app's `app.json` under `ios.infoPlist`.
+- **Android** — the Bluetooth/location permissions are declared in the AAR's own manifest and
+  reach the app through manifest merging, so `app.json` needs nothing. They must still be
+  *granted at runtime* on Android 12+: `startScan()` requests them itself and rejects with
+  `ERR_PLAUD_PERMISSIONS` if denied. `PlaudSdk.requestPermissions()` (Android-only) is
+  available if you'd rather prompt earlier.
+
+## ⚠️ Physical device only
+
+Both platforms need real Bluetooth hardware and a **dev build** (not Expo Go — this is custom
+native code):
+
+- iOS: the frameworks are **arm64, iOS 15+, device-only**, with no simulator slice —
+  `npx expo run:ios --device`.
+- Android: `npx expo run:android` on a physical handset. An emulator has no BLE radio, so
+  scanning emits `scanTimeout` with `reason: "bluetoothNotPoweredOn"`.
+
+Where the module isn't linked (web, iOS simulator), `isAvailable` is `false` and every
+`PlaudSdk` method rejects.
 
 ## Usage
+
 ```ts
 import { PlaudSdk, isAvailable } from 'plaud-sdk';
 
 if (isAvailable) {
   await PlaudSdk.initSDK({ userAccessToken, customDomain: 'platform-us.plaud.ai', userId });
   const sub = PlaudSdk.addListener('scanResult', ({ devices }) => { /* ... */ });
-  await PlaudSdk.startScan();
+  await PlaudSdk.startScan();   // Android: prompts for BLE permissions first
   // ...later: sub.remove();
 }
 ```
 
+## Platform differences
+
+The JS surface is identical, but three payload fields differ because the two native SDKs do:
+
+- **`PlaudScanDevice.uuid`** — the CoreBluetooth peripheral UUID on iOS, the **MAC address**
+  on Android. Either way it's the stable identifier you pass back to `connectBleDevice`, so
+  `connectBleDevice({ uuid })` works unchanged on both.
+- **`PlaudScanDevice.supportWiFi`** — iOS only. Android's scan payload has no Wi-Fi capability
+  flag, so it is always `false` there.
+- **`PlaudPenState`** — Android's `blePenState` callback carries only `state`, `privacy`,
+  `keyState` and `uDisk`; `findMyToken` / `hasSndpKey` / `deviceAccessToken` are iOS-only and
+  optional in the type.
+- **`PlaudFile.duration`** — Android's `BleFile` has no `duration()`, so it's computed from
+  file size and channel count (exact for raw Opus). For OGG-contained recordings it is a
+  slight **over-estimate**: the Android SDK's `calculateOggDuration` needs page geometry
+  (header size, frames-per-page) that it never exposes.
+
+Android's `BleFile` also carries no `sn` / `channels` / `isOgg` of its own — those are
+properties of the connected device, so the module reads them from the device it connected to,
+which is what the SDK itself does when decoding.
+
 ## Not ported from the Capacitor plugin
+
 `readFile` / `putBinary` — those existed only to work around WKWebView CORS when Capacitor
 loaded a remote origin. React Native has no WebView/CORS constraint: read exported files with
 `expo-file-system` and upload with `fetch`.

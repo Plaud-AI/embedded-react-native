@@ -3,9 +3,14 @@ import type { NativeModule } from 'expo-modules-core';
 /** A device surfaced by the SDK's `bleScanResult` callback. */
 export interface PlaudScanDevice {
   name: string;
+  /**
+   * Stable per-device identifier to pass back to `connectBleDevice`.
+   * iOS: the CoreBluetooth peripheral UUID. Android: the device's MAC address.
+   */
   uuid: string;
   serialNumber: string;
   rssi: number;
+  /** iOS only — the Android SDK's scan payload carries no Wi-Fi flag, so it is always `false`. */
   supportWiFi: boolean;
 }
 
@@ -25,9 +30,12 @@ export interface PlaudPenState {
   privacy: number;
   keyState: number;
   uDisk: number;
-  findMyToken: number;
-  hasSndpKey: number;
-  deviceAccessToken: number;
+  /** iOS only — Android's `blePenState` callback carries just the four fields above. */
+  findMyToken?: number;
+  /** iOS only. */
+  hasSndpKey?: number;
+  /** iOS only. */
+  deviceAccessToken?: number;
 }
 
 /** A recording stored on the device, from the `fileList` event. */
@@ -39,7 +47,10 @@ export interface PlaudFile {
   channels: number;
   isOgg: boolean;
   isMusic: boolean;
-  /** Duration in seconds. */
+  /**
+   * Duration in seconds. On Android this is derived from the file size and channel count;
+   * for OGG-contained recordings it is a slight over-estimate (see the module README).
+   */
   duration: number;
 }
 
@@ -99,12 +110,14 @@ export type PlaudSdkEvents = {
 };
 
 /**
- * Typed shape of the native `PlaudSdk` module (see modules/plaud-sdk/ios/PlaudSdkModule.swift).
+ * Typed shape of the native `PlaudSdk` module. Implemented twice, with an identical surface:
+ * `ios/PlaudSdkModule.swift` and `android/src/main/java/expo/modules/plaudsdk/PlaudSdkModule.kt`.
  * It extends `NativeModule`, so `addListener` / `removeListener` for every event above come
  * for free and are fully typed.
  *
- * iOS only: on Android / the simulator (no arm64 SDK slice) these calls reject. Guard with
- * `PlaudSdk.isAvailable` at call sites.
+ * Requires a physical device and a custom dev build on both platforms: the iOS frameworks have
+ * no simulator slice, and the Android SDK needs real Bluetooth hardware. Where the module isn't
+ * linked (web, iOS simulator) every call rejects — guard with `PlaudSdk.isAvailable`.
  */
 export declare class PlaudSdkModule extends NativeModule<PlaudSdkEvents> {
   /**
@@ -116,6 +129,18 @@ export declare class PlaudSdkModule extends NativeModule<PlaudSdkEvents> {
     customDomain: string;
     userId?: string;
   }): Promise<void>;
+  /**
+   * Android only. Requests the runtime Bluetooth/location permissions BLE scanning needs on
+   * API 31+. `startScan` calls this itself, so it's optional — use it to prompt at a moment
+   * of your choosing. On iOS the method is absent (permissions come from the Info.plist
+   * usage strings), so call it behind a `Platform.OS === 'android'` check.
+   */
+  requestPermissions?(): Promise<{ granted: boolean }>;
+  /**
+   * Start scanning. On Android this first requests BLE permissions and rejects with
+   * `ERR_PLAUD_PERMISSIONS` if they're denied; if Bluetooth is off, it resolves and emits
+   * `scanTimeout` with `reason: "bluetoothNotPoweredOn"` (same as iOS).
+   */
   startScan(): Promise<void>;
   stopScan(): Promise<void>;
   /** Connect to a device from a prior `scanResult`, by `uuid` (preferred) or `serialNumber`. */

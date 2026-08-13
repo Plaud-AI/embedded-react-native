@@ -1,8 +1,9 @@
 # Plaud SDK for React Native
 
 A local [Expo module](https://docs.expo.dev/modules/overview/) that bridges Plaud's native
-iOS device SDK into React Native. It exposes BLE scan/connect, on-device recording events,
-file listing, and audio export to JavaScript.
+device SDK into React Native on **iOS and Android**. It exposes BLE scan/connect, on-device
+recording events, file listing, and audio export to JavaScript — one JS surface, two native
+implementations.
 
 - **`modules/plaud-sdk/`** — the module itself. This is the piece you drop into another
   project. See `modules/plaud-sdk/README.md` for the terse module-level notes.
@@ -23,41 +24,56 @@ events travel back up.
         ▼
  ┌─────────────────────────────┐
  │ JS layer  (src/*.ts)        │  requireNativeModule('PlaudSdk'), fully typed,
- │                             │  degrades to a no-op Proxy off-iOS
+ │                             │  degrades to a no-op Proxy where unlinked
  └─────────────────────────────┘
         │  Expo Modules bridge (AsyncFunction / Events)
- ┌─────────────────────────────┐
- │ Plaud native SDK            │  three precompiled .xcframeworks
- │ (ios/Frameworks/*)          │  BLE / Device / WiFi
- └─────────────────────────────┘
+ ┌──────────────────┬──────────────────────┐
+ │ iOS              │ Android              │
+ │ PlaudSdkModule   │ PlaudSdkModule       │  same Name("PlaudSdk"),
+ │   .swift         │   .kt                │  same events & payloads
+ ├──────────────────┼──────────────────────┤
+ │ 3 .xcframeworks  │ plaud-sdk.aar        │  Plaud native SDK
+ │ BLE/Device/WiFi  │ (+ .so per ABI)      │
+ └──────────────────┴──────────────────────┘
 ```
 
 **1. JS layer (`src/index.ts`, `src/PlaudSdk.types.ts`).**
 `requireNativeModule('PlaudSdk')` resolves the native module at runtime. It's called lazily
-inside a `try/catch` and only on iOS, so the module never throws at import time. Two exports
-matter:
-- `isAvailable` — `true` only when the native module is linked and callable (a physical iOS
+inside a `try/catch` on iOS and Android, so the module never throws at import time. Two
+exports matter:
+- `isAvailable` — `true` only when the native module is linked and callable (a physical
   device). Guard every call site with it.
-- `PlaudSdk` — the typed handle. When the native module is absent (Android / simulator), it's
+- `PlaudSdk` — the typed handle. When the native module is absent (web, iOS simulator), it's
   a `Proxy` whose methods reject and whose `addListener` is a harmless no-op, so shared code
   doesn't need platform branches everywhere.
 
-**2. Plaud native SDK (`ios/Frameworks/*.xcframework`).**
+**2a. Plaud native SDK on iOS (`ios/Frameworks/*.xcframework`).**
 Three precompiled binary frameworks — `PlaudBleSDK`, `PlaudDeviceBasicSDK`, `PlaudWiFiSDK` —
 vendored by `ios/PlaudSdk.podspec` (`vendored_frameworks`). CocoaPods embeds and code-signs
 them automatically; there are no Podfile or Xcode edits to make by hand.
+
+**2b. Plaud native SDK on Android (`android/libs/plaud-sdk.aar`).**
+One precompiled AAR, consumed by `android/build.gradle`; its per-ABI `.so` files ship inside
+it and are packaged automatically. Because the AAR carries **no POM**, its transitive
+dependencies (Retrofit, OkHttp, Gson, BouncyCastle, Java-WebSocket, Conscrypt, Timber,
+slf4j/logback, Guava, coroutines) are declared by hand in that `build.gradle` — see
+`modules/plaud-sdk/README.md` before swapping the AAR. Bluetooth permissions come from the
+AAR's own manifest via manifest merging, so `app.json` needs nothing.
 
 ---
 
 ## ⚠️ Platform constraints — read this first
 
-The Plaud frameworks are **arm64, iOS 15+, device-only**. There is **no simulator slice** and
-**no Android support**. That means:
+The SDK talks to real Bluetooth hardware, so **both platforms need a physical device and a
+custom dev build** (not Expo Go):
 
-- You must run on a **physical iPhone** (`npx expo run:ios --device`), never the simulator.
-- You must use a **custom dev build**, not Expo Go (this is custom native code).
-- On Android or the simulator, `isAvailable` is `false` and every `PlaudSdk` method rejects —
-  so guard call sites and keep the app functional (just without the SDK) on those targets.
+- **iOS** — the frameworks are **arm64, iOS 15+, device-only** with no simulator slice. Run on
+  a physical iPhone (`npx expo run:ios --device`), never the simulator.
+- **Android** — run on a physical handset (`npx expo run:android`). An emulator has no BLE
+  radio, so scanning reports `scanTimeout`. On Android 12+ the Bluetooth permissions are
+  requested at runtime by `startScan()` (or up front via `PlaudSdk.requestPermissions()`).
+- Where the module isn't linked (web, iOS simulator), `isAvailable` is `false` and every
+  `PlaudSdk` method rejects — so guard call sites and keep the app functional without the SDK.
 
 ---
 
@@ -172,12 +188,18 @@ under `expo.ios.infoPlist`:
 ### Step 3: generate the native project and build
 
 ```bash
-npx expo prebuild -p ios     # regenerates ios/ from app.json and runs pod install
-npx expo run:ios --device    # build + install on a connected iPhone
+# iOS
+npx expo prebuild -p ios      # regenerates ios/ from app.json and runs pod install
+npx expo run:ios --device     # build + install on a connected iPhone
+
+# Android
+npx expo prebuild -p android  # regenerates android/ from app.json
+npx expo run:android          # build + install on a connected handset
 ```
 
 Re-run `expo prebuild` after any native config change. If you're in a bare app that manages
-`ios/` by hand, run `pod install` from `ios/` instead — autolinking still discovers the module.
+`ios/` or `android/` by hand, run `pod install` from `ios/` instead — autolinking still
+discovers the module on both platforms, with no `settings.gradle` or Podfile edits needed.
 
 ### Step 4: use it from JS
 
@@ -185,7 +207,7 @@ Re-run `expo prebuild` after any native config change. If you're in a bare app t
 import { PlaudSdk, isAvailable } from 'plaud-sdk';
 
 if (!isAvailable) {
-  // Android / simulator — the native module isn't linked. Degrade gracefully.
+  // web / iOS simulator — the native module isn't linked. Degrade gracefully.
 }
 
 // 1. Initialise with a per-user JWT (see "Tokens" below).
@@ -245,8 +267,9 @@ not part of this native module**. The demo shows the full flow in
 cd react-native-demo
 npm install
 cp .env.example .env        # fill in EXPO_PUBLIC_PLAUD_* values
-npx expo prebuild -p ios
-npx expo run:ios --device   # physical iPhone required
+
+npx expo prebuild -p ios && npx expo run:ios --device        # physical iPhone required
+npx expo prebuild -p android && npx expo run:android         # physical handset required
 ```
 
 See `react-native-demo/README.md` for the full build-and-run walkthrough.

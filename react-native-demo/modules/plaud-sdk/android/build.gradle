@@ -1,0 +1,61 @@
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'ai.plaud'
+version = '1.0.0'
+
+android {
+  namespace 'expo.modules.plaudsdk'
+
+  defaultConfig {
+    // The Plaud AAR declares minSdkVersion 21; Expo SDK 57 apps are already at 24+.
+    versionCode 1
+    versionName '1.0.0'
+  }
+
+  packagingOptions {
+    // logback-android and slf4j both ship these; the SDK only needs one copy.
+    resources {
+      excludes += ['META-INF/DEPENDENCIES', 'META-INF/LICENSE*', 'META-INF/NOTICE*']
+    }
+  }
+}
+
+dependencies {
+  // The Plaud Android SDK itself. `api` (not `implementation`) so the app's classpath can
+  // see the SDK types too — the same way the iOS podspec vendors the xcframeworks.
+  api fileTree(dir: 'libs', include: ['*.aar'])
+
+  // ⚠️ plaud-sdk.aar is a *bare* AAR: it carries no POM, so Gradle cannot resolve its
+  // transitive dependencies automatically. Every library the SDK's bytecode references has
+  // to be declared here by hand, or the app compiles fine and then dies at runtime with
+  // NoClassDefFoundError. This list was derived by scanning the AAR's class references —
+  // if you upgrade the AAR, re-check it.
+  implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1'
+
+  // Networking — sdk.network.* (Retrofit + OkHttp + Gson).
+  implementation 'com.squareup.retrofit2:retrofit:2.11.0'
+  implementation 'com.squareup.retrofit2:converter-gson:2.11.0'
+  implementation 'com.squareup.okhttp3:okhttp:4.12.0'
+  implementation 'com.squareup.okhttp3:logging-interceptor:4.12.0'
+  implementation 'com.google.code.gson:gson:2.11.0'
+
+  // sdk.ble.wifi.* runs a local WebSocket server for the Wi-Fi transfer path.
+  implementation 'org.java-websocket:Java-WebSocket:1.5.7'
+
+  // sdk.ble.util.AudioDecryptor uses ChaCha20 (org.bouncycastle.crypto.engines).
+  implementation 'org.bouncycastle:bcprov-jdk18on:1.78.1'
+
+  // Referenced by sdk.network.OkHttpCompat for the TLS provider.
+  implementation 'org.conscrypt:conscrypt-android:2.5.2'
+
+  // Logging: the SDK logs through Timber *and* slf4j/logback (res/raw/logback.xml).
+  implementation 'com.jakewharton.timber:timber:5.0.1'
+  implementation 'org.slf4j:slf4j-api:2.0.7'
+  implementation 'com.github.tony19:logback-android:3.0.0'
+
+  // com.google.common.util.concurrent.ThreadFactoryBuilder, used by the exporter's pool.
+  implementation 'com.google.guava:guava:33.3.1-android'
+}
