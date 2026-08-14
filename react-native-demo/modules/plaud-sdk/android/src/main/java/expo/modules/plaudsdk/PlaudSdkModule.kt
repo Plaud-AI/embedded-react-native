@@ -19,6 +19,14 @@ import expo.modules.kotlin.records.Record
 import java.io.File
 import com.tinnotech.penblesdk.entity.BleDevice
 import com.tinnotech.penblesdk.entity.BleFile
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import sdk.NiceBuildSdk
 import sdk.PlaudDeviceAgent
 import sdk.PlaudDeviceAgentListener
 import sdk.audio.AudioExportFormat
@@ -73,6 +81,13 @@ class PlaudSdkModule : Module() {
   private val main = Handler(Looper.getMainLooper())
 
   /**
+   * Connect can't be a straight-through call on Android: the handshake has two async
+   * prerequisites (see `prepareHandshake`). Main-immediate so the SDK calls still land on the
+   * main thread, with the blocking parts hopped to IO explicitly.
+   */
+  private val scope = CoroutineScope(Dispatchers.Main.immediate + SupervisorJob())
+
+  /**
    * `connectBleDevice` needs the actual `BleDevice` the SDK handed us during a scan — JS only
    * carries identifiers, so we retain scanned objects and look them up. Keyed by MAC address.
    */
@@ -118,6 +133,12 @@ class PlaudSdkModule : Module() {
       // uncaught main-thread crash instead of a rejected promise.
       val ctx = context.applicationContext
       main.post {
+        // The SDK's Partner API (gen-key / sn-sign) hardcodes platform-jp and does *not*
+        // follow `customDomain`. Point it at the right host first, or a non-JP token 401s,
+        // the RSA key fetch fails, and every device handshake fails after it.
+        runCatching {
+          NiceBuildSdk.getPartnerApiManager().updateBaseUrl("https://${options.customDomain}")
+        }
         PlaudDeviceAgent.listener = listener
         PlaudDeviceAgent.initSDK(ctx, options.userAccessToken, options.customDomain)
         promise.resolve(null)
@@ -187,12 +208,19 @@ class PlaudSdkModule : Module() {
           return@post
         }
         connectedDevice = device
-        if (!token.isNullOrEmpty()) {
-          PlaudDeviceAgent.connectBleDevice(device, token)
-        } else {
-          PlaudDeviceAgent.connectBleDevice(device)
+        scope.launch {
+          try {
+            prepareHandshake(device)
+            if (!token.isNullOrEmpty()) {
+              PlaudDeviceAgent.connectBleDevice(device, token)
+            } else {
+              PlaudDeviceAgent.connectBleDevice(device)
+            }
+            promise.resolve(null)
+          } catch (e: Exception) {
+            promise.reject(PlaudSdkException(e.message ?: "connect failed", "ERR_PLAUD_CONNECT"))
+          }
         }
-        promise.resolve(null)
       }
     }
 
@@ -268,6 +296,7 @@ class PlaudSdkModule : Module() {
       if (PlaudDeviceAgent.listener === listener) {
         PlaudDeviceAgent.listener = null
       }
+      scope.cancel()
     }
   }
 
@@ -392,6 +421,33 @@ class PlaudSdkModule : Module() {
       "sessionId" to sessionId, "reason" to reason,
       "fileExist" to fileExist, "fileSize" to fileSize
     )
+
+  /**
+   * Two prerequisites the iOS SDK handles internally but the Android one leaves to the caller:
+   * the partner RSA key pair (fetched over HTTP by `initSDK`, asynchronously) has to have
+   * landed, and the device's serial number has to be signed and stored. Skipping either leaves
+   * the handshake without an `snSignature` and the connect fails — the device is found by the
+   * scan, then `connectState` reports failure. Both are best-effort: the SDK logs its own
+   * failures and the connect attempt still proceeds, matching the reference apps.
+   */
+  private suspend fun prepareHandshake(device: BleDevice) = withContext(Dispatchers.IO) {
+    val deadline = System.currentTimeMillis() + 10_000L
+    while (!NiceBuildSdk.isPartnerDataReady() && System.currentTimeMillis() < deadline) {
+      delay(200)
+    }
+    val sn = device.serialNumber
+    if (!sn.isNullOrEmpty()) {
+      runCatching { NiceBuildSdk.signAndStoreDeviceSn(deviceType(sn), sn) }
+    }
+  }
+
+  /** SN prefix → device type, as expected by `signAndStoreDeviceSn`. */
+  private fun deviceType(sn: String): String = when {
+    sn.startsWith("881") -> "notepro"
+    sn.startsWith("880") -> "notepin"
+    sn.startsWith("882") -> "notepins"
+    else -> "note"
+  }
 
   private fun lookupDevice(uuid: String?, serialNumber: String?): BleDevice? =
     synchronized(scannedDevices) {
