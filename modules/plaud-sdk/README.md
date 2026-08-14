@@ -93,6 +93,23 @@ Android's `BleFile` also carries no `sn` / `channels` / `isOgg` of its own — t
 properties of the connected device, so the module reads them from the device it connected to,
 which is what the SDK itself does when decoding.
 
+### ⚠️ Android's connect handshake has prerequisites iOS handles internally
+
+The Android SDK leaves three steps to the caller, and skipping any of them looks the same from
+JS: the scan finds the device, `connectBleDevice()` resolves, then `connectState` reports
+`failed`. The module does all three — don't "simplify" them away:
+
+1. **`initSDK` must repoint the Partner API.** `sdk.network.PartnerRetrofitClient` hardcodes
+   `https://platform-jp.plaud.ai` and does *not* follow `customDomain`, so a `platform-us`
+   token 401s on gen-key, the RSA key pair never arrives, and every handshake after it fails.
+   The module calls `NiceBuildSdk.getPartnerApiManager().updateBaseUrl("https://$customDomain")`
+   before `PlaudDeviceAgent.initSDK`.
+2. **`connectBleDevice` must wait for `NiceBuildSdk.isPartnerDataReady()`** (10 s cap) —
+   `initSDK` fetches those keys over HTTP, asynchronously.
+3. **…then `NiceBuildSdk.signAndStoreDeviceSn(deviceType, sn)`** — the handshake reads the
+   stored `snSignature`. `deviceType` comes from the SN prefix (`881` notepro, `880` notepin,
+   `882` notepins, else `note`).
+
 ## Not ported from the Capacitor plugin
 
 `readFile` / `putBinary` — those existed only to work around WKWebView CORS when Capacitor

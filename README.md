@@ -96,13 +96,20 @@ cp .env.example .env
 
 You can retrieve your environment credentials from the [developer portal](https://portal.plaud.ai) and retrieve a token from our [API playground](https://plaud-embedded-playground.vercel.app)
 
-### 3. Build and open in XCode
+### 3a. Build and open in XCode
 ```bash
 npx expo prebuild -p ios
 open ios/reactnativedemo.xcworkspace
 ```
 In XCode, make sure to include your Apple developer credentials and certificate. 
 
+### 3b. Build and open in Android Studio
+```bash
+npx expo prebuild -p android
+npx expo run:android
+```
+
+### 4. Run
 Then **run on a physical device** to test out the demo app with your Plaud devices.
 
 ---
@@ -260,16 +267,3 @@ not part of this native module**. The demo shows the full flow in
 > production the transcription API key and upload must live behind a backend.
 
 ---
-
-## Running the demo app
-
-```bash
-cd react-native-demo
-npm install
-cp .env.example .env        # fill in EXPO_PUBLIC_PLAUD_* values
-
-npx expo prebuild -p ios && npx expo run:ios --device        # physical iPhone required
-npx expo prebuild -p android && npx expo run:android         # physical handset required
-```
-
-See `react-native-demo/README.md` for the full build-and-run walkthrough.
