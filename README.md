@@ -1,8 +1,8 @@
 # Plaud SDK for React Native
 
-A local [Expo module](https://docs.expo.dev/modules/overview/) that bridges Plaud's native
-device SDK into React Native on **iOS and Android**. It exposes BLE scan/connect, on-device
-recording events, file listing, and audio export to JavaScript — one JS surface, two native
+A local [Expo module](https://docs.expo.dev/modules/overview/) that bridges Plaud Embedded's SDK 
+into React Native on **iOS and Android**. It exposes BLE scan/connect, on-device
+recording events, file listing, and audio export to JavaScript.
 implementations.
 
 - **`modules/plaud-sdk/`** — the module itself. This is the piece you drop into another
@@ -10,70 +10,6 @@ implementations.
 - **`react-native-demo/`** — a reference Expo (SDK 57) app wiring the module end to end:
   scan → connect → list → export → transcribe. `src/app/index.tsx` is the canonical usage
   example.
-
----
-
-## How the module works
-
-The module is three layers stacked on top of each other. A JS call travels down; native
-events travel back up.
-
-```
- your React Native code
-        │  import { PlaudSdk, isAvailable } from 'plaud-sdk'
-        ▼
- ┌─────────────────────────────┐
- │ JS layer  (src/*.ts)        │  requireNativeModule('PlaudSdk'), fully typed,
- │                             │  degrades to a no-op Proxy where unlinked
- └─────────────────────────────┘
-        │  Expo Modules bridge (AsyncFunction / Events)
- ┌──────────────────┬──────────────────────┐
- │ iOS              │ Android              │
- │ PlaudSdkModule   │ PlaudSdkModule       │  same Name("PlaudSdk"),
- │   .swift         │   .kt                │  same events & payloads
- ├──────────────────┼──────────────────────┤
- │ 3 .xcframeworks  │ plaud-sdk.aar        │  Plaud native SDK
- │ BLE/Device/WiFi  │ (+ .so per ABI)      │
- └──────────────────┴──────────────────────┘
-```
-
-**1. JS layer (`src/index.ts`, `src/PlaudSdk.types.ts`).**
-`requireNativeModule('PlaudSdk')` resolves the native module at runtime. It's called lazily
-inside a `try/catch` on iOS and Android, so the module never throws at import time. Two
-exports matter:
-- `isAvailable` — `true` only when the native module is linked and callable (a physical
-  device). Guard every call site with it.
-- `PlaudSdk` — the typed handle. When the native module is absent (web, iOS simulator), it's
-  a `Proxy` whose methods reject and whose `addListener` is a harmless no-op, so shared code
-  doesn't need platform branches everywhere.
-
-**2a. Plaud native SDK on iOS (`ios/Frameworks/*.xcframework`).**
-Three precompiled binary frameworks — `PlaudBleSDK`, `PlaudDeviceBasicSDK`, `PlaudWiFiSDK` —
-vendored by `ios/PlaudSdk.podspec` (`vendored_frameworks`). CocoaPods embeds and code-signs
-them automatically; there are no Podfile or Xcode edits to make by hand.
-
-**2b. Plaud native SDK on Android (`android/libs/plaud-sdk.aar`).**
-One precompiled AAR, consumed by `android/build.gradle`; its per-ABI `.so` files ship inside
-it and are packaged automatically. Because the AAR carries **no POM**, its transitive
-dependencies (Retrofit, OkHttp, Gson, BouncyCastle, Java-WebSocket, Conscrypt, Timber,
-slf4j/logback, Guava, coroutines) are declared by hand in that `build.gradle` — see
-`modules/plaud-sdk/README.md` before swapping the AAR. Bluetooth permissions come from the
-AAR's own manifest via manifest merging, so `app.json` needs nothing.
-
----
-
-## ⚠️ Platform constraints — read this first
-
-The SDK talks to real Bluetooth hardware, so **both platforms need a physical device and a
-custom dev build** (not Expo Go):
-
-- **iOS** — the frameworks are **arm64, iOS 15+, device-only** with no simulator slice. Run on
-  a physical iPhone (`npx expo run:ios --device`), never the simulator.
-- **Android** — run on a physical handset (`npx expo run:android`). An emulator has no BLE
-  radio, so scanning reports `scanTimeout`. On Android 12+ the Bluetooth permissions are
-  requested at runtime by `startScan()` (or up front via `PlaudSdk.requestPermissions()`).
-- Where the module isn't linked (web, iOS simulator), `isAvailable` is `false` and every
-  `PlaudSdk` method rejects — so guard call sites and keep the app functional without the SDK.
 
 ---
 
@@ -262,8 +198,56 @@ Once a recording is exported to a local file, **uploading and transcribing it is
 not part of this native module**. The demo shows the full flow in
 `react-native-demo/src/lib/plaud-transcription.ts` (presigned S3 upload → submit → poll).
 
-> ⚠️ The demo calls the Plaud platform API directly from the device with `EXPO_PUBLIC_*`
+> The demo calls the Plaud platform API directly from the device with `EXPO_PUBLIC_*`
 > credentials, which are extractable from the bundle. That's fine for a demo, but in
 > production the transcription API key and upload must live behind a backend.
 
 ---
+
+## How the module works
+
+The module is three layers stacked on top of each other. A JS call travels down; native
+events travel back up.
+
+```
+ your React Native code
+        │  import { PlaudSdk, isAvailable } from 'plaud-sdk'
+        ▼
+ ┌─────────────────────────────┐
+ │ JS layer  (src/*.ts)        │  requireNativeModule('PlaudSdk'), fully typed,
+ │                             │  degrades to a no-op Proxy where unlinked
+ └─────────────────────────────┘
+        │  Expo Modules bridge (AsyncFunction / Events)
+ ┌──────────────────┬──────────────────────┐
+ │ iOS              │ Android              │
+ │ PlaudSdkModule   │ PlaudSdkModule       │  same Name("PlaudSdk"),
+ │   .swift         │   .kt                │  same events & payloads
+ ├──────────────────┼──────────────────────┤
+ │ 3 .xcframeworks  │ plaud-sdk.aar        │  Plaud native SDK
+ │ BLE/Device/WiFi  │ (+ .so per ABI)      │
+ └──────────────────┴──────────────────────┘
+```
+
+**1. JS layer (`src/index.ts`, `src/PlaudSdk.types.ts`).**
+`requireNativeModule('PlaudSdk')` resolves the native module at runtime. It's called lazily
+inside a `try/catch` on iOS and Android, so the module never throws at import time. Two
+exports matter:
+- `isAvailable` — `true` only when the native module is linked and callable (a physical
+  device). Guard every call site with it.
+- `PlaudSdk` — the typed handle. When the native module is absent (web, iOS simulator), it's
+  a `Proxy` whose methods reject and whose `addListener` is a harmless no-op, so shared code
+  doesn't need platform branches everywhere.
+
+**2a. Plaud native SDK on iOS (`ios/Frameworks/*.xcframework`).**
+Three precompiled binary frameworks — `PlaudBleSDK`, `PlaudDeviceBasicSDK`, `PlaudWiFiSDK` —
+vendored by `ios/PlaudSdk.podspec` (`vendored_frameworks`). CocoaPods embeds and code-signs
+them automatically.
+
+**2b. Plaud native SDK on Android (`android/libs/plaud-sdk.aar`).**
+One precompiled AAR, consumed by `android/build.gradle`; its per-ABI `.so` files ship inside
+it and are packaged automatically. Because the AAR carries **no POM**, its transitive
+dependencies (Retrofit, OkHttp, Gson, BouncyCastle, Java-WebSocket, Conscrypt, Timber,
+slf4j/logback, Guava, coroutines) are declared by hand in that `build.gradle`. Bluetooth permissions come from the
+AAR's own manifest via manifest merging, so `app.json` needs nothing.
+
+
