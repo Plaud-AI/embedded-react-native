@@ -9,12 +9,26 @@ import { Icon } from '@/components/plaud/icon';
 import type { FileResult, PlaudFile, PlaudScanDevice } from '@/components/plaud/types';
 import { BottomTabInset, MaxContentWidth, PlaudColors, Spacing } from '@/constants/theme';
 import { transcribeExportedFile } from '@/lib/plaud-transcription';
-import { PlaudSdk, isAvailable } from 'plaud-sdk';
+import { PlaudSdk, isAvailable, type PlaudWifiState } from 'plaud-sdk';
 
 const PLAUD_DOMAIN = 'platform-us.plaud.ai';
 const USER_ID = 'jackmu';
 
 const errMessage = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+/** Human labels for the `wifiState` event, in the order the session walks through them. */
+const WIFI_LABELS: Record<PlaudWifiState, string> = {
+  none: 'idle',
+  openingHotspot: 'opening the recorder’s Wi-Fi…',
+  connecting: 'joining the recorder’s network…',
+  connected: 'joined — handshaking…',
+  handshaking: 'handshaking…',
+  handshakeCompleted: 'ready',
+  ready: 'ready',
+  disconnected: 'disconnected',
+  stopped: 'stopped',
+  error: 'error',
+};
 
 /**
  * Mint the per-user Plaud JWT that `initSDK` requires. In the Capacitor demo the Next.js
@@ -42,12 +56,19 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const [scanning, setScanning] = useState(false);
   const [tokenReady, setTokenReady] = useState(false);
+  const [wifiState, setWifiState] = useState<PlaudWifiState | null>(null);
+  const [wifiInfo, setWifiInfo] = useState<string | null>(null);
 
   const [results, setResults] = useState<Record<number, FileResult>>({});
   const [openSessionId, setOpenSessionId] = useState<number | null>(null);
 
   const updateResult = (sessionId: number, patch: Partial<FileResult>) =>
     setResults((prev) => ({ ...prev, [sessionId]: { ...prev[sessionId], ...patch } }));
+
+  // Either state means the Wi-Fi session is usable — whichever the SDK reports first.
+  const wifiReady = wifiState === 'ready' || wifiState === 'handshakeCompleted';
+  const wifiSessionOpen =
+    wifiState != null && !['none', 'stopped', 'disconnected', 'error'].includes(wifiState);
 
   // Initialise the native SDK once, after minting the per-user token.
   useEffect(() => {
@@ -118,6 +139,25 @@ export default function Home() {
       PlaudSdk.addListener('exportProgress', ({ sessionId, progress, message }) => {
         updateResult(sessionId, { exportInfo: `${progress}% ${message}` });
       }),
+      // Wi-Fi fast transfer. Emitted on Android only; on iOS these simply never fire.
+      PlaudSdk.addListener('wifiState', ({ state }) => {
+        setWifiState(state);
+        if (state === 'stopped' || state === 'disconnected') setWifiInfo(null);
+      }),
+      PlaudSdk.addListener('wifiFileList', ({ files: found }) => {
+        setWifiInfo(`${found.length} file${found.length === 1 ? '' : 's'} over Wi-Fi`);
+        // The device drops BLE to run its AP, so the BLE `fileList` is stale for the rest of the
+        // session — drive the Recordings list off the Wi-Fi list instead. Session ids match, so
+        // any already-exported result stays attached to its file.
+        setFiles(found.map((f) => ({ sessionId: f.sessionId, duration: f.duration, size: f.fileSize })));
+      }),
+      PlaudSdk.addListener('wifiTransferProgress', ({ sessionId, progress, speedKBps }) => {
+        setWifiInfo(`session ${sessionId} · ${progress}% · ${speedKBps.toFixed(0)} KB/s`);
+      }),
+      PlaudSdk.addListener('wifiError', ({ code, message }) => {
+        setWifiInfo(null);
+        setError(`Wi-Fi transfer error ${code}: ${message}`);
+      }),
       PlaudSdk.addListener('depair', () => {
         setConnected(false);
         setDevices([]);
@@ -126,6 +166,8 @@ export default function Home() {
         setIsLive(false);
         setResults({});
         setOpenSessionId(null);
+        setWifiState(null);
+        setWifiInfo(null);
       }),
     ];
     return () => subs.forEach((s) => s.remove());
@@ -154,6 +196,32 @@ export default function Home() {
     );
   };
 
+  /**
+   * Start a Wi-Fi fast transfer session. The device must already be connected over BLE. The
+   * promise resolving only means the session was *started*: progress arrives via `wifiState`, and
+   * both platforms show a system "Join Wi-Fi network?" prompt that the user has to accept (iOS
+   * also asks for Location the first time — it needs it to join the recorder's hotspot).
+   */
+  const handleWifiTransfer = () => {
+    setError(null);
+    setWifiState('openingHotspot');
+    setWifiInfo(null);
+    PlaudSdk.startWifiTransfer().catch((e) => {
+      setWifiState(null);
+      setError(`Wi-Fi transfer failed: ${errMessage(e)}`);
+    });
+  };
+
+  const handleStopWifi = () => {
+    setError(null);
+    PlaudSdk.stopWifiTransfer()
+      .catch((e) => setError(`Stopping Wi-Fi transfer failed: ${errMessage(e)}`))
+      .finally(() => {
+        setWifiState(null);
+        setWifiInfo(null);
+      });
+  };
+
   const handleDepair = () => {
     Alert.alert('Unpair device', 'Unpair this device and clear local pairing state?', [
       { text: 'Cancel', style: 'cancel' },
@@ -179,8 +247,12 @@ export default function Home() {
     });
     try {
       // Native: decode the recording to an mp3 in Documents/PlaudExports. `exportProgress`
-      // events update exportInfo along the way.
-      const { outputPath } = await PlaudSdk.exportAudio({ sessionId: f.sessionId, format: 'mp3' });
+      // events update exportInfo along the way. With a Wi-Fi session up, the same export runs
+      // over Wi-Fi instead of BLE — identical options, identical result shape, so nothing below
+      // this line changes.
+      const { outputPath } = wifiReady
+        ? await PlaudSdk.exportAudioViaWiFi({ sessionId: f.sessionId, format: 'mp3' })
+        : await PlaudSdk.exportAudio({ sessionId: f.sessionId, format: 'mp3' });
       const uri = outputPath.startsWith('file://') ? outputPath : `file://${outputPath}`;
       const name = outputPath.split('/').pop() ?? 'export.mp3';
       let sizeLabel = '';
@@ -222,7 +294,9 @@ export default function Home() {
 
   const handleRefreshFiles = () => {
     setError(null);
-    PlaudSdk.getFileList().catch((e) => setError(`getFileList failed: ${errMessage(e)}`));
+    // BLE is down for the duration of a Wi-Fi session, so refresh over whichever transport is live.
+    const refresh = wifiSessionOpen ? PlaudSdk.getWifiFileList() : PlaudSdk.getFileList();
+    refresh.catch((e) => setError(`Refreshing recordings failed: ${errMessage(e)}`));
   };
 
   const openFile = openSessionId != null ? files.find((x) => x.sessionId === openSessionId) : null;
@@ -252,6 +326,24 @@ export default function Home() {
                 style={styles.grow}
               />
             )}
+            {connected && !wifiSessionOpen && (
+              <DevButton
+                label="Wi-Fi transfer"
+                icon="wifi"
+                variant="primary"
+                onPress={handleWifiTransfer}
+                style={styles.grow}
+              />
+            )}
+            {wifiSessionOpen && (
+              <DevButton
+                label="Stop Wi-Fi"
+                icon="wifi"
+                variant="secondary"
+                onPress={handleStopWifi}
+                style={styles.grow}
+              />
+            )}
             {connected && (
               <DevButton
                 label="Unpair"
@@ -275,6 +367,20 @@ export default function Home() {
                 <Overline style={styles.bannerOverline}>{isLive ? 'Live' : 'Last capture'}</Overline>
                 <Mono numberOfLines={1} style={styles.bannerDetail}>
                   {recording}
+                </Mono>
+              </View>
+            </DevCard>
+          )}
+
+          {/* Wi-Fi fast transfer status */}
+          {wifiState && (
+            <DevCard style={[styles.banner, wifiReady && styles.bannerLive]}>
+              <Icon name="wifi" size={20} color={PlaudColors.textLight} />
+              <View style={styles.bannerText}>
+                <Overline style={styles.bannerOverline}>Wi-Fi fast transfer</Overline>
+                <Mono numberOfLines={1} style={styles.bannerDetail}>
+                  {WIFI_LABELS[wifiState]}
+                  {wifiInfo ? ` · ${wifiInfo}` : ''}
                 </Mono>
               </View>
             </DevCard>
@@ -310,8 +416,10 @@ export default function Home() {
             </View>
           )}
 
-          {/* Recordings on the connected device — tap to export/transcribe. */}
-          {connected && (
+          {/* Recordings on the device — tap to export/transcribe. Shown during a Wi-Fi session
+              too: the device drops BLE to run its AP, so `connected` goes false while the
+              recordings are still very much reachable (faster, in fact). */}
+          {(connected || wifiSessionOpen) && (
             <View style={styles.section}>
               <View style={styles.sectionHead}>
                 <Overline>Recordings</Overline>

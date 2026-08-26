@@ -31,6 +31,7 @@ import sdk.PlaudDeviceAgent
 import sdk.PlaudDeviceAgentListener
 import sdk.audio.AudioExportFormat
 import sdk.audio.AudioExporter
+import sdk.ble.wifi.IWifiTransferAgent
 
 // MARK: - Typed argument records (mirrors the `Record` structs in PlaudSdkModule.swift)
 
@@ -58,6 +59,14 @@ class ExportOptions : Record {
   @Field val sessionId: Long = -1
   @Field val format: String = "mp3"
   @Field val channels: Int = 1
+}
+
+class WifiTransferOptions : Record {
+  @Field val userId: String? = null
+}
+
+class WifiDeleteOptions : Record {
+  @Field val sessionIds: List<Long> = emptyList()
 }
 
 private class PlaudSdkException(message: String, code: String = "ERR_PLAUD") :
@@ -108,6 +117,12 @@ class PlaudSdkModule : Module() {
 
   @Volatile private var isScanning = false
 
+  /**
+   * One-shot guard for the Wi-Fi file-list request. The SDK does not fetch the list itself, and
+   * `READY` / `onHandshakeCompleted` can arrive in either order — see `requestWifiFileListOnce`.
+   */
+  @Volatile private var wifiFileListRequested = false
+
   private val context: Context
     get() = appContext.reactContext ?: throw PlaudSdkException("React context is unavailable")
 
@@ -118,7 +133,10 @@ class PlaudSdkModule : Module() {
 
     Events(
       "scanResult", "scanTimeout", "connectState", "penState", "bind", "fileList",
-      "exportProgress", "recordStart", "recordStop", "recordPause", "recordResume", "depair"
+      "exportProgress", "recordStart", "recordStop", "recordPause", "recordResume", "depair",
+      // Wi-Fi fast transfer. Both platforms declare and emit the same set.
+      "wifiState", "wifiFileList", "wifiTransferProgress",
+      "wifiDeleteComplete", "wifiBattery", "wifiError"
     )
 
     AsyncFunction("initSDK") { options: InitOptions, promise: Promise ->
@@ -290,7 +308,159 @@ class PlaudSdkModule : Module() {
       }
     }
 
+    // MARK: Wi-Fi fast transfer
+    //
+    // The recorder brings up its own Wi-Fi AP, the phone joins it, and files come across a local
+    // WebSocket — much faster than streaming over BLE. The device must already be connected over
+    // BLE: `checkPrerequisites()` tests for it, and the SDK lifts the ChaCha20-Poly1305 session
+    // keys off the BLE link when the transfer starts.
+
+    AsyncFunction("startWifiTransfer") { options: WifiTransferOptions?, promise: Promise ->
+      // The handshake identity is the app-level user id — same fallback as `connectBleDevice`.
+      val handshakeUserId = options?.userId ?: userId
+      if (handshakeUserId.isNullOrEmpty()) {
+        throw PlaudSdkException(
+          "userId is required — pass it here or set it in initSDK", "ERR_PLAUD_ARGS"
+        )
+      }
+      main.post {
+        val agent: IWifiTransferAgent? = PlaudDeviceAgent.getWifiAgent()
+        if (agent?.checkPrerequisites() != true) {
+          promise.reject(
+            PlaudSdkException(
+              "Wi-Fi transfer needs a live BLE connection — connect the device first",
+              "ERR_PLAUD_WIFI_PREREQ"
+            )
+          )
+          return@post
+        }
+        wifiFileListRequested = false
+        // Opening the AP over BLE takes a few seconds and the SDK reports nothing until it has
+        // a network to connect to, so publish the phase ourselves — the reference apps do the
+        // same, and it's the difference between a responsive UI and one that looks hung.
+        emit("wifiState", bundleOf("state" to "openingHotspot"))
+        scope.launch {
+          try {
+            prepareWifiTransfer()
+            if (!PlaudDeviceAgent.startWifiTransfer(handshakeUserId, wifiCallback)) {
+              promise.reject(
+                PlaudSdkException(
+                  "Wi-Fi transfer could not be started — one is already active",
+                  "ERR_PLAUD_WIFI"
+                )
+              )
+              return@launch
+            }
+            promise.resolve(null)
+          } catch (e: Exception) {
+            promise.reject(
+              PlaudSdkException(e.message ?: "startWifiTransfer failed", "ERR_PLAUD_WIFI")
+            )
+          }
+        }
+      }
+    }
+
+    AsyncFunction("stopWifiTransfer") { promise: Promise ->
+      main.post {
+        stopWifiTransferInternal()
+        promise.resolve(null)
+      }
+    }
+
+    AsyncFunction("isWifiTransferActive") { promise: Promise ->
+      main.post { promise.resolve(bundleOf("active" to PlaudDeviceAgent.isWifiTransferActive())) }
+    }
+
+    AsyncFunction("getWifiTransferState") { promise: Promise ->
+      main.post {
+        val agent: IWifiTransferAgent? = PlaudDeviceAgent.getWifiAgent()
+        promise.resolve(bundleOf("state" to wifiStateName(agent?.getConnectionState())))
+      }
+    }
+
+    /**
+     * Refresh the Wi-Fi file list. The module already requests it once when the session reaches
+     * `ready`, so this is only needed to re-read the list later in a session.
+     */
+    AsyncFunction("getWifiFileList") { promise: Promise ->
+      main.post {
+        val agent: IWifiTransferAgent? = PlaudDeviceAgent.getWifiAgent()
+        if (agent?.getFileList() != true) {
+          promise.reject(wifiNotReady("file list"))
+          return@post
+        }
+        promise.resolve(null)
+      }
+    }
+
+    /**
+     * The Wi-Fi counterpart of `exportAudio`, with an identical contract: same `PlaudExports`
+     * output dir, same `exportProgress` events, same `{ sessionId, outputPath }` resolution — so
+     * an existing export/upload call site switches path by changing the method name alone.
+     */
+    AsyncFunction("exportAudioViaWiFi") { options: ExportOptions, promise: Promise ->
+      if (options.sessionId < 0) {
+        throw PlaudSdkException("sessionId is required", "ERR_PLAUD_ARGS")
+      }
+      val format = exportFormat(options.format)
+      val sessionId = options.sessionId
+      val exportsDir = File(context.filesDir, "PlaudExports")
+      main.post {
+        val dir = exportsDir.apply { mkdirs() }
+        PlaudDeviceAgent.exportAudioViaWiFi(
+          sessionId,
+          dir,
+          format,
+          options.channels,
+          object : AudioExporter.ExportCallback {
+            override fun onProgress(progress: Int, message: String) {
+              emit(
+                "exportProgress",
+                bundleOf("sessionId" to sessionId, "progress" to progress, "message" to message)
+              )
+            }
+
+            override fun onComplete(output: File) {
+              promise.resolve(
+                bundleOf("sessionId" to sessionId, "outputPath" to output.absolutePath)
+              )
+            }
+
+            override fun onError(error: String) {
+              promise.reject(PlaudSdkException(error, "ERR_PLAUD_EXPORT"))
+            }
+          }
+        )
+      }
+    }
+
+    /**
+     * Delete recordings from the device over Wi-Fi. Call this only once every transfer in the
+     * session has finished — a delete between transfers disrupts the WebSocket. Result arrives
+     * via `wifiDeleteComplete`.
+     */
+    AsyncFunction("deleteWifiFiles") { options: WifiDeleteOptions, promise: Promise ->
+      if (options.sessionIds.isEmpty()) {
+        throw PlaudSdkException("sessionIds must not be empty", "ERR_PLAUD_ARGS")
+      }
+      main.post {
+        val agent: IWifiTransferAgent? = PlaudDeviceAgent.getWifiAgent()
+        if (agent?.deleteFiles(options.sessionIds) != true) {
+          promise.reject(wifiNotReady("delete"))
+          return@post
+        }
+        promise.resolve(null)
+      }
+    }
+
     OnDestroy {
+      // A live Wi-Fi session owns a ConnectivityManager.NetworkCallback and a local WebSocket
+      // server. Leaking those across a reload leaves the handset joined to the recorder's AP
+      // with no internet, so tear the session down before anything else.
+      if (runCatching { PlaudDeviceAgent.isWifiTransferActive() }.getOrDefault(false)) {
+        stopWifiTransferInternal()
+      }
       // The SDK's listener is a process-wide static; leaving ours attached would keep this
       // module (and the React context) alive across reloads.
       if (PlaudDeviceAgent.listener === listener) {
@@ -316,8 +486,9 @@ class PlaudSdkModule : Module() {
           "serialNumber" to (d.serialNumber ?: ""),
           "rssi" to d.rssi,
           // The Android SDK's scan payload carries no Wi-Fi capability flag (iOS's
-          // `BleDevice.supportWiFi` has no Android equivalent). Reported false; use the
-          // Wi-Fi sync APIs on a connected device to determine support.
+          // `BleDevice.supportWiFi` has no Android equivalent), so this is always false and says
+          // nothing about Wi-Fi fast transfer — probe a *connected* device with
+          // `getWifiTransferState()` / `startWifiTransfer()` for that.
           "supportWiFi" to false
         )
       })
@@ -414,6 +585,91 @@ class PlaudSdkModule : Module() {
     }
   }
 
+  // MARK: - IWifiTransferAgent.WifiTransferCallback
+  //
+  // Retained for the module's lifetime: the SDK holds this while a transfer runs, and every
+  // method is abstract, so all twelve are implemented here.
+
+  private val wifiCallback = object : IWifiTransferAgent.WifiTransferCallback {
+    override fun onConnectionStateChanged(state: IWifiTransferAgent.WifiConnectionState) {
+      emit("wifiState", bundleOf("state" to wifiStateName(state)))
+      if (state == IWifiTransferAgent.WifiConnectionState.READY) requestWifiFileListOnce()
+    }
+
+    override fun onHandshakeCompleted(session: String) {
+      emit("wifiState", bundleOf("state" to "handshakeCompleted", "session" to session))
+      requestWifiFileListOnce()
+    }
+
+    override fun onFileListReceived(files: List<IWifiTransferAgent.WifiFileInfo>) {
+      val payload = ArrayList(files.map { f ->
+        bundleOf(
+          "sessionId" to f.sessionId,
+          "fileName" to f.fileName,
+          "fileSize" to f.fileSize,
+          // The SDK reports duration in milliseconds and the timestamp in seconds; both are
+          // normalised here to the units the rest of the JS surface uses (`PlaudFile.duration`
+          // is seconds, and JS dates are milliseconds).
+          "duration" to f.duration / 1000,
+          "timestamp" to f.timestamp * 1000,
+          "scene" to f.scene
+        )
+      })
+      emit("wifiFileList", Bundle().apply { putParcelableArrayList("files", payload) })
+    }
+
+    override fun onTransferProgress(sessionId: Long, progress: Int, speed: Double) {
+      emit(
+        "wifiTransferProgress",
+        bundleOf("sessionId" to sessionId, "progress" to progress, "speedKBps" to speed)
+      )
+    }
+
+    // The four callbacks below belong to the raw `downloadFile` / `downloadAllFiles` path, which
+    // is no longer exposed to JS: it wrote the device's stream verbatim — still encrypted, with no
+    // container — producing `.opus` blobs that could not be played, timed or transcribed.
+    // `exportAudioViaWiFi` is the only Wi-Fi transfer path now, and it reports completion by
+    // resolving its own promise. Every method on the callback interface is abstract, so these have
+    // to stay; nothing fires them.
+
+    override fun onFileTransferCompleted(sessionId: Long, filePath: String) {}
+
+    override fun onBatchDownloadStarted(totalFiles: Int) {}
+
+    override fun onBatchDownloadProgress(
+      currentIndex: Int, totalFiles: Int, currentFileName: String
+    ) {}
+
+    override fun onBatchDownloadCompleted(
+      successCount: Int,
+      failedCount: Int,
+      results: List<IWifiTransferAgent.BatchDownloadResult>
+    ) {}
+
+    override fun onFileDeleteCompleted(success: Boolean, deletedCount: Int, error: String?) {
+      emit(
+        "wifiDeleteComplete",
+        bundleOf("success" to success, "count" to deletedCount, "error" to error)
+      )
+    }
+
+    override fun onWifiTransferStopped() {
+      wifiFileListRequested = false
+      emit("wifiState", bundleOf("state" to "stopped"))
+    }
+
+    override fun onDeviceBatteryUpdate(level: Int, isCharging: Boolean) {
+      emit("wifiBattery", bundleOf("level" to level, "charging" to isCharging))
+    }
+
+    override fun onError(code: Int, message: String) {
+      // The SDK's numeric codes are passed straight through so JS can branch on them:
+      // 1001 prerequisites, 1002 open-AP, 1003 join, 1004/1006 handshake, 1005 port in use,
+      // 3000 not ready, 3001 unknown session, 3005 storage.
+      emit("wifiError", bundleOf("code" to code, "message" to message))
+    }
+  }
+
   // MARK: - Helpers
 
   private fun recordStopBundle(sessionId: Long, reason: Int, fileExist: Boolean, fileSize: Long) =
@@ -506,6 +762,62 @@ class PlaudSdkModule : Module() {
       callback(response.values.all { it.status == expo.modules.interfaces.permissions.PermissionsStatus.GRANTED })
     }, *blePermissions())
   }
+
+  /**
+   * Two things the device needs before it will open its AP, both learned from the reference
+   * apps — **don't "simplify" them away**: any in-flight BLE file sync has to stop (otherwise
+   * openWiFi answers status 4 and the join fails with error 1003), and the device needs a moment
+   * to actually go idle afterwards.
+   */
+  private suspend fun prepareWifiTransfer() = withContext(Dispatchers.Main.immediate) {
+    runCatching { PlaudDeviceAgent.stopSyncFile() }
+    delay(1_500L)
+  }
+
+  /**
+   * Tear down a Wi-Fi session.
+   *
+   * ⚠️ This must go through `NiceBuildSdk.stopWifiTransfer()` — **not**
+   * `PlaudDeviceAgent.endWiFiTransfer()` and not the agent's own `stopWifiTransfer()`. Only this
+   * one also asks the device to close its hotspot over BLE; the others tear down the phone side
+   * and leave the recorder sitting in Wi-Fi mode until its ~2 minute firmware timeout.
+   */
+  private fun stopWifiTransferInternal() {
+    wifiFileListRequested = false
+    runCatching { NiceBuildSdk.stopWifiTransfer() }
+    // If BLE came back up, close the AP explicitly too — matching the reference app's
+    // belt-and-braces teardown.
+    if (runCatching { PlaudDeviceAgent.isConnected() }.getOrDefault(false)) {
+      runCatching { PlaudDeviceAgent.setDeviceWiFi(false) }
+    }
+  }
+
+  /**
+   * The SDK does not fetch the Wi-Fi file list itself, and `READY` and `onHandshakeCompleted` can
+   * arrive in either order, so the request is fired from both and guarded to run once per session.
+   */
+  private fun requestWifiFileListOnce() {
+    if (wifiFileListRequested) return
+    wifiFileListRequested = true
+    val agent: IWifiTransferAgent? = PlaudDeviceAgent.getWifiAgent()
+    runCatching { agent?.getFileList() }
+  }
+
+  private fun wifiNotReady(what: String) = PlaudSdkException(
+    "Wi-Fi transfer is not ready — wait for the wifiState \"ready\" event before requesting the $what",
+    "ERR_PLAUD_WIFI_NOT_READY"
+  )
+
+  private fun wifiStateName(state: IWifiTransferAgent.WifiConnectionState?): String =
+    when (state) {
+      IWifiTransferAgent.WifiConnectionState.CONNECTING -> "connecting"
+      IWifiTransferAgent.WifiConnectionState.CONNECTED -> "connected"
+      IWifiTransferAgent.WifiConnectionState.HANDSHAKING -> "handshaking"
+      IWifiTransferAgent.WifiConnectionState.READY -> "ready"
+      IWifiTransferAgent.WifiConnectionState.DISCONNECTED -> "disconnected"
+      IWifiTransferAgent.WifiConnectionState.ERROR -> "error"
+      else -> "none"
+    }
 
   private fun exportFormat(raw: String?): AudioExportFormat =
     when (raw?.lowercase()) {

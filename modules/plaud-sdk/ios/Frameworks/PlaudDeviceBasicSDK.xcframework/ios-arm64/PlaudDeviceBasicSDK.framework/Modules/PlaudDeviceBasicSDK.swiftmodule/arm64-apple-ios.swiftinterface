@@ -13,6 +13,7 @@ import CryptoKit
 import Foundation
 import MediaPlayer
 import MobileCoreServices
+import NetworkExtension
 import ObjectiveC
 import Photos
 @_exported import PlaudBleSDK
@@ -1202,6 +1203,10 @@ extension PlaudDeviceBasicSDK.ChaCha20 {
 @_inheritsConvenienceInitializers @_hasMissingDesignatedInitializers @objc public class PlaudDeviceAgent : ObjectiveC.NSObject {
   @objc public static let shared: PlaudDeviceBasicSDK.PlaudDeviceAgent
   public var bleAgent: PlaudBleSDK.BleAgent?
+  @objc public var currentDownloadSpeedKBps: Swift.Double {
+    @objc get
+  }
+  @objc public func getFormattedDownloadSpeed() -> Swift.String
   @objc public var recentConnectDevice: PlaudBleSDK.BleDevice?
   @objc public var sceneFlag: Swift.Int {
     get
@@ -1314,6 +1319,8 @@ extension PlaudDeviceBasicSDK.PlaudDeviceAgent : PlaudBleSDK.BleAgentProtocol {
   @objc dynamic public func bleRate(lossRate: Swift.Double, rate: Swift.Int, instantRate: Swift.Int)
   @objc dynamic public func bleSetActive(status: Swift.Int)
   public func bleCommonSetting(_ setting: Swift.Int)
+  @objc dynamic public func bleIBeaconWakeupEnabled(_ value: Swift.Int)
+  @objc dynamic public func bleSyncOtaFileInfo(uid: Swift.UInt32, start: Swift.UInt32, end: Swift.UInt32, toVersion: Swift.UInt32, toVersionType: Swift.UInt8, isSilent: Swift.Int, packetCheckOk: Swift.Int)
   @objc dynamic public func bleHeartbeat(status: Swift.Int)
   @objc dynamic public func bleBatteryMode(_ mode: Swift.Int)
   @objc dynamic public func bleDeviceStatus(status: [Swift.UInt8])
@@ -1621,6 +1628,7 @@ extension PlaudDeviceBasicSDK.PlaudLogConfig {
   @objc optional func wifiCommonErr(_ cmd: Swift.Int, _ status: Swift.Int)
   @objc optional func wifiHandshake(_ status: Swift.Int)
   @objc optional func wifiConnectionStatus(_ ssid: Swift.String, _ connected: Swift.Bool)
+  @objc optional func wifiConnectResult(_ success: Swift.Bool, _ errorCode: Swift.Int, _ message: Swift.String)
   @objc optional func wifiPower(_ power: Swift.Int, _ voltage: Swift.Int)
   @objc optional func wifiFileListFail(_ status: Swift.Int)
   @objc optional func wifiFileList(_ files: [PlaudBleSDK.BleFile])
@@ -1667,7 +1675,6 @@ extension PlaudDeviceBasicSDK.PlaudLogConfig {
   }
   @objc public func openLog(_ opened: Swift.Bool, _ backBlock: ((Swift.String) -> Swift.Void)? = nil)
   @objc public func listenPort(_ ssid: Swift.String, _ overtimeSec: Swift.Int = 30)
-  @available(iOS 11.0, *)
   @objc public func connectWifi(_ ssid: Swift.String, _ passphrase: Swift.String, _ overtimeSec: Swift.Int = 60)
   @objc public func disconnect()
   @objc public func isConnectedTo(_ ssid: Swift.String) -> Swift.Bool
@@ -1678,6 +1685,7 @@ extension PlaudDeviceBasicSDK.PlaudLogConfig {
   @objc public func stopSyncFile(_ sessionId: Swift.Int, _ scene: Swift.Int = 1)
   @objc public func deleteFile(_ sessionId: Swift.Int, _ scene: Swift.Int = 1)
   public func exportAudioViaWiFi(sessionId: Swift.Int, outputDir: Swift.String, format: PlaudDeviceBasicSDK.AudioExportFormat, channels: Swift.Int = 1, callback: any PlaudDeviceBasicSDK.AudioExportCallback)
+  @objc public func downloadAllFiles()
   @objc public func startDownloadAll()
   @objc public func stopDownloadAll()
   @objc public func startRateTest(_ onOff: Swift.Bool, _ packSize: Swift.Int)
@@ -1708,8 +1716,6 @@ extension PlaudDeviceBasicSDK.PlaudWiFiAgent : PlaudWiFiSDK.WiFiAgentProtocol {
   @objc dynamic public func wifiOTAStatus(_ status: Swift.Int, _ uid: Swift.Int)
 }
 @_hasMissingDesignatedInitializers public class RSASecretConfig {
-  public static let defaultPublicKey: Swift.String
-  public static let defaultPrivateKey: Swift.String
   public static func setKeys(publicKey: Swift.String, privateKey: Swift.String)
   public static func getSnSignature(for sn: Swift.String) -> Swift.String?
   public static func setSnSignature(_ signature: Swift.String, for sn: Swift.String)
@@ -1723,7 +1729,18 @@ extension PlaudDeviceBasicSDK.PlaudWiFiAgent : PlaudWiFiSDK.WiFiAgentProtocol {
   public static func hasCustomKeys() -> Swift.Bool
   @objc deinit
 }
+public enum PlaudLogExportError : Swift.Error, Foundation.LocalizedError {
+  case logsDirectoryNotFound
+  case noLogFiles
+  case zipFailed
+  case encryptFailed
+  case writeFailed(underlying: any Swift.Error)
+  public var errorDescription: Swift.String? {
+    get
+  }
+}
 @_inheritsConvenienceInitializers @objc(PlaudLogEncryption) public class PlaudLogEncryption : ObjectiveC.NSObject {
+  @objc public static func exportEncryptedLogFile() throws -> Foundation.NSURL
   @objc public static func exportEncryptedLogs() -> Foundation.NSURL?
   @objc override dynamic public init()
   @objc deinit

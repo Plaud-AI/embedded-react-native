@@ -10,7 +10,11 @@ export interface PlaudScanDevice {
   uuid: string;
   serialNumber: string;
   rssi: number;
-  /** iOS only — the Android SDK's scan payload carries no Wi-Fi flag, so it is always `false`. */
+  /**
+   * iOS only — the Android SDK's scan payload carries no Wi-Fi flag, so it is always `false` there.
+   * Not a Wi-Fi-fast-transfer capability check: on Android, probe a connected device with
+   * `getWifiTransferState()` / `startWifiTransfer()`.
+   */
   supportWiFi: boolean;
 }
 
@@ -93,6 +97,68 @@ export interface PlaudRecordResume {
 
 export type PlaudAudioFormat = 'pcm' | 'mp3' | 'wav' | 'opus';
 
+/**
+ * Wi-Fi fast transfer session state, from the `wifiState` event.
+ *
+ * `openingHotspot` is reported by the module itself while the (slow) BLE command that brings up the
+ * recorder's AP is in flight; the rest come from the SDK. `handshakeCompleted` and `ready` both mean
+ * the session is usable — whichever arrives first triggers the automatic `wifiFileList` request.
+ */
+export type PlaudWifiState =
+  | 'none'
+  | 'openingHotspot'
+  | 'connecting'
+  | 'connected'
+  | 'handshaking'
+  | 'handshakeCompleted'
+  | 'ready'
+  | 'disconnected'
+  | 'stopped'
+  | 'error';
+
+export interface PlaudWifiStateEvent {
+  state: PlaudWifiState;
+  /** Only on `handshakeCompleted` — the SDK's session identifier. */
+  session?: string;
+}
+
+/** A recording on the device as reported over Wi-Fi, from the `wifiFileList` event. */
+export interface PlaudWifiFile {
+  sessionId: number;
+  fileName: string;
+  /** Bytes. */
+  fileSize: number;
+  /** Seconds — normalised from the SDK's milliseconds to match `PlaudFile.duration`. */
+  duration: number;
+  /** Milliseconds since the epoch — normalised from the SDK's seconds. */
+  timestamp: number;
+  scene: number;
+}
+
+export interface PlaudWifiFileList {
+  files: PlaudWifiFile[];
+}
+
+export interface PlaudWifiTransferProgress {
+  sessionId: number;
+  /** 0-100, for the file currently transferring. */
+  progress: number;
+  /** Throughput in KB/s over the last second. */
+  speedKBps: number;
+}
+
+/**
+ * Wi-Fi session failure. `code` is a shared number so call sites can branch the same way on both
+ * platforms: 1001 prerequisites not met, 1002 could not open the device AP, 1003 could not join it,
+ * 1004/1006 handshake or connection failed, 1005 local port in use, 3000 not ready,
+ * 3001 command rejected, 3005 storage error. Android passes the SDK's own codes straight through;
+ * iOS maps its lower-level callbacks onto the same space.
+ */
+export interface PlaudWifiError {
+  code: number;
+  message: string;
+}
+
 /** Event name → listener signature. Consumed by `PlaudSdk.addListener(name, cb)`. */
 export type PlaudSdkEvents = {
   scanResult: (data: PlaudScanResult) => void;
@@ -107,6 +173,13 @@ export type PlaudSdkEvents = {
   recordPause: (data: PlaudRecordStop) => void;
   recordResume: (data: PlaudRecordResume) => void;
   depair: (data: { status: number }) => void;
+  // Wi-Fi fast transfer. Emitted on both platforms, with identical payload shapes.
+  wifiState: (data: PlaudWifiStateEvent) => void;
+  wifiFileList: (data: PlaudWifiFileList) => void;
+  wifiTransferProgress: (data: PlaudWifiTransferProgress) => void;
+  wifiDeleteComplete: (data: { success: boolean; count: number; error: string | null }) => void;
+  wifiBattery: (data: { level: number; charging: boolean }) => void;
+  wifiError: (data: PlaudWifiError) => void;
 };
 
 /**
@@ -164,4 +237,58 @@ export declare class PlaudSdkModule extends NativeModule<PlaudSdkEvents> {
     format?: PlaudAudioFormat;
     channels?: number;
   }): Promise<{ sessionId: number; outputPath: string }>;
+
+  // MARK: Wi-Fi fast transfer
+  //
+  // Implemented on both platforms with identical event names, payload shapes and error codes.
+  // iOS additionally needs the HotspotConfiguration / wifi-info entitlements, the local-network
+  // and location usage strings, and granted When-In-Use location — see the module README.
+
+  /**
+   * Start a Wi-Fi fast transfer session: the recorder opens its own Wi-Fi AP, the phone joins it —
+   * the system shows a "Join Wi-Fi network?" prompt the user must accept — and recordings then
+   * transfer over a local WebSocket instead of BLE.
+   *
+   * The device must already be connected over BLE or this rejects `ERR_PLAUD_WIFI_PREREQ`; on iOS
+   * the same code comes back when Location access has been denied, since joining the AP needs it.
+   * A second concurrent session rejects `ERR_PLAUD_WIFI`. `userId` defaults to the one passed to
+   * `initSDK`.
+   *
+   * Resolving means the session was started, not that it is usable: watch `wifiState` until it
+   * reports `"ready"`, at which point a `wifiFileList` event arrives without any further call.
+   */
+  startWifiTransfer(options?: { userId?: string }): Promise<void>;
+  /**
+   * Tear the session down and ask the device to close its AP, restoring the phone's normal
+   * network. Safe to call when no session is running.
+   */
+  stopWifiTransfer(): Promise<void>;
+  /** Whether a Wi-Fi session is currently running. */
+  isWifiTransferActive(): Promise<{ active: boolean }>;
+  /** The current session state; `"none"` when there is no session. */
+  getWifiTransferState(): Promise<{ state: PlaudWifiState }>;
+  /**
+   * Re-request the Wi-Fi file list mid-session; results arrive via `wifiFileList`. The first list
+   * is fetched automatically when the session becomes ready, so this is only needed to refresh it.
+   * Rejects `ERR_PLAUD_WIFI_NOT_READY` before the session is ready.
+   */
+  getWifiFileList(): Promise<void>;
+  /**
+   * The Wi-Fi counterpart of `exportAudio`: identical options, identical
+   * `{ sessionId, outputPath }` result, the same `exportProgress` events and the same
+   * `Documents/PlaudExports` output directory — so an existing export call site switches to the
+   * fast path by changing the method name alone. Progress is additionally reported with
+   * throughput via `wifiTransferProgress`.
+   */
+  exportAudioViaWiFi(options: {
+    sessionId: number;
+    format?: PlaudAudioFormat;
+    channels?: number;
+  }): Promise<{ sessionId: number; outputPath: string }>;
+  /**
+   * Delete recordings from the device over Wi-Fi. Call this only once every transfer in the
+   * session has finished — deleting between transfers disrupts the connection. The result
+   * arrives via `wifiDeleteComplete`.
+   */
+  deleteWifiFiles(options: { sessionIds: number[] }): Promise<void>;
 }

@@ -30,6 +30,11 @@ Pod::Spec.new do |s|
     'Frameworks/PlaudDeviceBasicSDK.xcframework'
   ]
 
+  # The SDK reaches for NEHotspotConfiguration / CLLocationManager / SCNetworkReachability
+  # internally on the Wi-Fi fast-transfer path. With `static_framework`, linking those system
+  # frameworks is the host target's job.
+  s.frameworks = 'NetworkExtension', 'CoreLocation', 'SystemConfiguration'
+
   s.pod_target_xcconfig = {
     'DEFINES_MODULE' => 'YES'
   }

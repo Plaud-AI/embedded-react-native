@@ -1,18 +1,19 @@
 ---
 name: setup-plaud-react-native
-description: Set up the Plaud SDK Expo/React Native module (BLE connect, on-device recording, file list, audio export) on iOS and Android in an existing or new React Native app. Use when a user wants to integrate Plaud's native device SDK into a React Native / Expo app.
+description: Set up the Plaud SDK Expo/React Native module (BLE connect, on-device recording, file list, audio export, Wi-Fi fast transfer) on iOS and Android in an existing or new React Native app. Use when a user wants to integrate Plaud's native device SDK into a React Native / Expo app.
 ---
 
 # Setting up the Plaud React Native module
 
 `plaud-sdk` is a local [Expo module](https://docs.expo.dev/modules/overview/) that bridges
 Plaud's precompiled native device SDK into React Native on **iOS and Android**. It exposes BLE
-scan/connect, on-device recording events, file listing, and audio export to JavaScript, with a
-typed event stream.
+scan/connect, on-device recording events, file listing, audio export and Wi-Fi fast transfer (the
+recorder opens its own AP and files come across a local WebSocket instead of BLE) to JavaScript,
+with a typed event stream.
 
 Both platforms implement the **same JS surface, event names and payload shapes**, so app code
 needs no platform branches (the handful of real differences are listed in
-`references/android.md`). The module lives at `modules/plaud-sdk/` in this repo; a full
+`references/ios.md` and `references/android.md`). The module lives at `modules/plaud-sdk/` in this repo; a full
 reference app is at `react-native-demo/` (`src/app/index.tsx` is the canonical usage example).
 
 Use this skill to add the module to an app and get it building on a device.
@@ -102,7 +103,15 @@ them under `expo.ios.infoPlist` in `app.json`:
     "ios": {
       "infoPlist": {
         "NSBluetoothAlwaysUsageDescription": "Plaud uses Bluetooth to connect to your recorder and sync recordings.",
-        "UIBackgroundModes": ["bluetooth-central"]
+        "UIBackgroundModes": ["bluetooth-central"],
+        // Wi-Fi fast transfer only:
+        "NSLocalNetworkUsageDescription": "Plaud uses your local network to transfer recordings over Wi-Fi.",
+        "NSLocationWhenInUseUsageDescription": "Plaud uses your location to identify and join your recorder's Wi-Fi hotspot."
+      },
+      // Wi-Fi fast transfer only:
+      "entitlements": {
+        "com.apple.developer.networking.HotspotConfiguration": true,
+        "com.apple.developer.networking.wifi-info": true
       }
     }
   }
@@ -111,6 +120,11 @@ them under `expo.ios.infoPlist` in `app.json`:
 
 Without `NSBluetoothAlwaysUsageDescription` the app crashes the moment it touches Bluetooth.
 `UIBackgroundModes: ["bluetooth-central"]` keeps BLE alive when backgrounded.
+
+The entitlements and the last two plist keys are needed **only if the app uses Wi-Fi fast
+transfer**. `HotspotConfiguration` is a provisioning-profile-gated capability: it must be enabled on
+the App ID in the Apple developer portal, and a free personal team cannot enable it — signing fails
+otherwise. See `references/ios.md`.
 
 **Android** — **`app.json` needs nothing.** The Bluetooth/location permissions are declared in
 `plaud-sdk.aar`'s own manifest and reach the app through manifest merging. They must still be
@@ -193,9 +207,14 @@ Pull these in only when the task needs them:
 
 - **`references/api-reference.md`** — every `PlaudSdk` method, every event and its payload, all
   TypeScript types, and the error codes. Consult when writing call sites or handling an event.
+- **`references/ios.md`** — iOS-specific behavior: the entitlements and permissions **Wi-Fi fast
+  transfer** needs, the timings and teardown order the session depends on, and the payload fields
+  that differ from Android. Read this before wiring up Wi-Fi transfer on iOS, debugging a join
+  failure, or replacing the xcframeworks.
 - **`references/android.md`** — Android-specific behavior: the hand-declared AAR dependencies,
-  runtime permissions, the connect-handshake prerequisites, and the payload fields that differ
-  from iOS. Read this before debugging an Android-only failure or upgrading the AAR.
+  runtime permissions, the connect-handshake prerequisites, **Wi-Fi fast transfer** prerequisites,
+  and the payload fields that differ from iOS. Read this before debugging an Android-only failure
+  or upgrading the AAR.
 - **`references/transcription-and-tokens.md`** — where the per-user JWT comes from, and the
   optional export → upload → transcribe HTTP flow (which is **not** part of the native module
   and belongs behind a backend in production).
@@ -214,5 +233,10 @@ Pull these in only when the task needs them:
 - **Scan before you connect, on both platforms.** The native side caches the device objects
   from `scanResult` and looks them up by `uuid`; a hardcoded id rejects with
   `ERR_PLAUD_UNKNOWN_DEVICE`.
+- **Wi-Fi fast transfer works on both platforms** with the same seven methods and six events, so
+  it needs no `Platform.OS` branch. `exportAudioViaWiFi` has the same contract as `exportAudio`, so
+  switching a call site to the fast path is a one-word change. iOS needs two entitlements and two
+  plist keys (Step 2) plus granted When-In-Use location; Android needs no configuration. See
+  `references/ios.md` and `references/android.md`.
 - **`readFile` / `putBinary` do not exist here.** They were Capacitor WKWebView CORS shims. In
   RN, read exported files with `expo-file-system` and upload with `fetch`.

@@ -82,6 +82,7 @@ public func == (lhs: PlaudWiFiSDK.NetworkReachabilityManager.NetworkReachability
   @objc func wifiDataComplete()
   @objc func wifiSyncFileStop(_ status: Swift.Int)
   @objc func wifiFileDelete(_ sessionId: Swift.Int, _ status: Swift.Int)
+  @objc optional func wifiConnected()
   @objc func wifiClientFail()
   @objc func wifiClose(_ status: Swift.Int)
   @objc func wifiRateFail(_ status: Swift.Int)
@@ -91,6 +92,7 @@ public func == (lhs: PlaudWiFiSDK.NetworkReachabilityManager.NetworkReachability
   @objc func wifiTips(_ tips: Swift.Int)
   @objc func penRequestOTAData(start: Swift.Int, end: Swift.Int, payloadSize: Swift.Int, uid: Swift.Int, sendRatePPS: Swift.Int)
   @objc func wifiOTAStatus(_ status: Swift.Int, _ uid: Swift.Int)
+  @objc optional func onWiFiConnectStateChanged(_ event: PlaudWiFiSDK.WiFiConnectEvent)
 }
 @_inheritsConvenienceInitializers @_hasMissingDesignatedInitializers @objc public class WiFiAgent : ObjectiveC.NSObject {
   @objc public static let shared: PlaudWiFiSDK.WiFiAgent
@@ -123,8 +125,9 @@ public func == (lhs: PlaudWiFiSDK.NetworkReachabilityManager.NetworkReachability
   @objc public func openLog(_ opened: Swift.Bool, _ backBlock: ((Swift.String) -> Swift.Void)? = nil)
   @objc public func listenPort(_ ssid: Swift.String, _ overtimeSec: Swift.Int = 30)
   @available(iOS 11.0, *)
-  @objc public func connectWifi(_ ssid: Swift.String, _ passphrase: Swift.String, _ overtimeSec: Swift.Int = 60, _ needRetry: Swift.Bool = true)
+  @objc public func connectWifi(_ ssid: Swift.String, _ passphrase: Swift.String, _ overtimeSec: Swift.Int = 60, _ needRetry: Swift.Bool = true, _ hotspotCheckDelaySec: Swift.Int = 10, _ stallTimeoutSec: Swift.Int = 30)
   @objc public func cancelConnectWifi()
+  public static func isPersonalHotspotEnabled() -> Swift.Bool
   @available(iOS 11.0, *)
   @objc public func clearAllWiFiConfigurations()
   @objc public func clearAllWiFiConfigurationsCompat()
@@ -164,5 +167,45 @@ extension PlaudWiFiSDK.WiFiAgent {
   public func cancel(label identifier: Swift.String)
   @objc deinit
 }
+@objc public enum WiFiConnectStage : Swift.Int {
+  case wifiIdle = 0
+  case wifiConnecting = 1
+  case wifiConnected = 2
+  case wifiHandshaking = 3
+  case wifiSocketConnected = 4
+  case wifiReady = 5
+  case wifiConnectFailed = 6
+  case wifiClosed = 7
+  public init?(rawValue: Swift.Int)
+  public typealias RawValue = Swift.Int
+  public var rawValue: Swift.Int {
+    get
+  }
+}
+@objc public enum WiFiConnectReason : Swift.Int {
+  case none = 0
+  case personalHotspot = 1
+  case connectSlow = 2
+  case timeout = 3
+  case failed = 4
+  public init?(rawValue: Swift.Int)
+  public typealias RawValue = Swift.Int
+  public var rawValue: Swift.Int {
+    get
+  }
+}
+@objc public class WiFiConnectEvent : ObjectiveC.NSObject {
+  @objc final public let stage: PlaudWiFiSDK.WiFiConnectStage
+  @objc final public let reason: PlaudWiFiSDK.WiFiConnectReason
+  @objc public init(stage: PlaudWiFiSDK.WiFiConnectStage, reason: PlaudWiFiSDK.WiFiConnectReason = .none)
+  @objc public func toDictionary() -> [Swift.String : Any]
+  @objc deinit
+}
 extension PlaudWiFiSDK.NetworkReachabilityManager.ConnectionType : Swift.Equatable {}
 extension PlaudWiFiSDK.NetworkReachabilityManager.ConnectionType : Swift.Hashable {}
+extension PlaudWiFiSDK.WiFiConnectStage : Swift.Equatable {}
+extension PlaudWiFiSDK.WiFiConnectStage : Swift.Hashable {}
+extension PlaudWiFiSDK.WiFiConnectStage : Swift.RawRepresentable {}
+extension PlaudWiFiSDK.WiFiConnectReason : Swift.Equatable {}
+extension PlaudWiFiSDK.WiFiConnectReason : Swift.Hashable {}
+extension PlaudWiFiSDK.WiFiConnectReason : Swift.RawRepresentable {}

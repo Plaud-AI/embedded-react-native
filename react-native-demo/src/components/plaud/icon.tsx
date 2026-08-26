@@ -17,6 +17,7 @@ const SYMBOLS = {
   close: 'xmark',
   check: 'checkmark.circle.fill',
   play: 'play.circle.fill',
+  wifi: 'wifi',
 } satisfies Record<string, SymbolViewProps['name']>;
 
 export type PlaudIconName = keyof typeof SYMBOLS;

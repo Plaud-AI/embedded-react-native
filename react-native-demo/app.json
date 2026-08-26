@@ -12,7 +12,15 @@
       "bundleIdentifier": "ai.plaud.reactnativedemo",
       "infoPlist": {
         "NSBluetoothAlwaysUsageDescription": "Plaud uses Bluetooth to connect to your recorder and sync recordings.",
-        "UIBackgroundModes": ["bluetooth-central"]
+        "UIBackgroundModes": [
+          "bluetooth-central"
+        ],
+        "NSLocalNetworkUsageDescription": "Plaud uses your local network to transfer recordings from your recorder over Wi-Fi.",
+        "NSLocationWhenInUseUsageDescription": "Plaud uses your location to identify and join your recorder's Wi-Fi hotspot for fast transfer."
+      },
+      "entitlements": {
+        "com.apple.developer.networking.HotspotConfiguration": true,
+        "com.apple.developer.networking.wifi-info": true
       }
     },
     "android": {

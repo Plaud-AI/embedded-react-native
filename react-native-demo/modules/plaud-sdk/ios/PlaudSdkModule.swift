@@ -30,18 +30,56 @@ struct ExportOptions: Record {
   @Field var channels: Int = 1
 }
 
+// Wi-Fi fast transfer arguments.
+
+struct WifiTransferOptions: Record {
+  @Field var userId: String?
+}
+
+struct WifiDeleteOptions: Record {
+  @Field var sessionIds: [Int] = []
+}
+
+// MARK: - Shared export helpers
+
+/// `Documents/PlaudExports` — where both the BLE and the Wi-Fi export path write, so JS-side path
+/// handling doesn't care which transport produced a file.
+func plaudExportsDirectory() -> URL {
+  let dir = FileManager.default
+    .urls(for: .documentDirectory, in: .userDomainMask)[0]
+    .appendingPathComponent("PlaudExports", isDirectory: true)
+  try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+  return dir
+}
+
+/// Maps the JS format string onto the SDK enum, defaulting to mp3 — the only format that is both
+/// playable by AVAudioPlayer and accepted by the transcription API.
+func plaudExportFormat(from raw: String?) -> AudioExportFormat {
+  switch (raw ?? "mp3").lowercased() {
+  case "pcm": return .pcm
+  case "wav": return .wav
+  case "opus": return .opus
+  default: return .mp3
+  }
+}
+
 /// Expo module bridging Plaud's native iOS SDK. This is the RN counterpart of the
 /// Capacitor `PlaudSdk` plugin (PlaudSdkPlugin.swift). Expo's `Module` base class isn't
 /// `NSObject`-derived, so it can't itself conform to the `@objc PlaudDeviceAgentProtocol`;
 /// all SDK interaction and delegate handling lives in `PlaudSdkController` (an NSObject),
-/// which emits results back to JS through the closure the module hands it.
+/// which emits results back to JS through the closure the module hands it. The Wi-Fi
+/// fast-transfer session has its own `NSObject` for the same reason — `PlaudWifiController`.
 ///
 /// Surface (mirrors the Capacitor plugin, minus the `readFile`/`putBinary` CORS shims that
 /// only existed because Capacitor loaded a remote-origin WebView — RN has no such
 /// constraint and reads exports with expo-file-system / uploads with fetch):
-/// connection lifecycle, file listing, and on-device audio export.
+/// connection lifecycle, file listing, on-device audio export, and Wi-Fi fast transfer.
 public class PlaudSdkModule: Module {
-  private lazy var controller = PlaudSdkController { [weak self] event, body in
+  private lazy var wifi = PlaudWifiController { [weak self] event, body in
+    DispatchQueue.main.async { self?.sendEvent(event, body) }
+  }
+
+  private lazy var controller = PlaudSdkController(wifi: self.wifi) { [weak self] event, body in
     // Hop to the main queue before crossing into JS, as the Capacitor plugin's `notify` did —
     // SDK delegate callbacks can arrive on arbitrary threads.
     DispatchQueue.main.async { self?.sendEvent(event, body) }
@@ -52,7 +90,10 @@ public class PlaudSdkModule: Module {
 
     Events(
       "scanResult", "scanTimeout", "connectState", "penState", "bind", "fileList",
-      "exportProgress", "recordStart", "recordStop", "recordPause", "recordResume", "depair"
+      "exportProgress", "recordStart", "recordStop", "recordPause", "recordResume", "depair",
+      // Wi-Fi fast transfer. Both platforms declare and emit the same set.
+      "wifiState", "wifiFileList", "wifiTransferProgress",
+      "wifiDeleteComplete", "wifiBattery", "wifiError"
     )
 
     AsyncFunction("initSDK") { (options: InitOptions, promise: Promise) in
@@ -90,14 +131,60 @@ public class PlaudSdkModule: Module {
     AsyncFunction("exportAudio") { (options: ExportOptions, promise: Promise) in
       self.controller.exportAudio(options, promise: promise)
     }
+
+    // MARK: - Wi-Fi fast transfer
+    //
+    // The recorder brings up its own Wi-Fi AP and files come across a local WebSocket instead of
+    // BLE. Needs the `com.apple.developer.networking.HotspotConfiguration` / `.wifi-info`
+    // entitlements, `NSLocalNetworkUsageDescription`, `NSLocationWhenInUseUsageDescription`, and
+    // granted When-In-Use location — see the module README.
+
+    AsyncFunction("startWifiTransfer") { (options: WifiTransferOptions?, promise: Promise) in
+      self.wifi.startWifiTransfer(options, promise: promise)
+    }
+
+    AsyncFunction("stopWifiTransfer") { (promise: Promise) in
+      self.wifi.stopWifiTransfer(promise: promise)
+    }
+
+    AsyncFunction("isWifiTransferActive") { (promise: Promise) in
+      self.wifi.isWifiTransferActive(promise: promise)
+    }
+
+    AsyncFunction("getWifiTransferState") { (promise: Promise) in
+      self.wifi.getWifiTransferState(promise: promise)
+    }
+
+    AsyncFunction("getWifiFileList") { (promise: Promise) in
+      self.wifi.getWifiFileList(promise: promise)
+    }
+
+    AsyncFunction("exportAudioViaWiFi") { (options: ExportOptions, promise: Promise) in
+      self.wifi.exportAudioViaWiFi(options, promise: promise)
+    }
+
+    AsyncFunction("deleteWifiFiles") { (options: WifiDeleteOptions, promise: Promise) in
+      self.wifi.deleteWifiFiles(options, promise: promise)
+    }
+
+    OnDestroy {
+      // A live Wi-Fi session holds an NEHotspotConfiguration and the SDK's local WebSocket
+      // server. Leaking those across a JS reload leaves the handset joined to the recorder's AP
+      // with no internet, so tear the session down before detaching the delegate.
+      self.wifi.moduleWillDestroy()
+      self.controller.detach()
+    }
   }
 }
 
 /// Owns every interaction with `PlaudDeviceAgent`, holds the scan cache / in-flight export
 /// bridges, and is the SDK's `PlaudDeviceAgentProtocol` delegate. Delegate callbacks are
 /// forwarded to JS via `emit`, the closure supplied by the module (which calls `sendEvent`).
-private final class PlaudSdkController: NSObject, PlaudDeviceAgentProtocol {
+final class PlaudSdkController: NSObject, PlaudDeviceAgentProtocol {
   private let emit: (String, [String: Any?]) -> Void
+
+  /// The Wi-Fi session owner. `bleWiFiOpen` arrives on this delegate but belongs to it.
+  private let wifi: PlaudWifiController
 
   /// `connectBleDevice` needs the actual `BleDevice` the SDK handed us during a scan — JS
   /// only carries identifiers, so we retain scanned objects and look them up. Keyed by
@@ -115,7 +202,8 @@ private final class PlaudSdkController: NSObject, PlaudDeviceAgentProtocol {
   private var scanReadyAttempts = 0
   private var isScanning = false
 
-  init(emit: @escaping (String, [String: Any?]) -> Void) {
+  init(wifi: PlaudWifiController, emit: @escaping (String, [String: Any?]) -> Void) {
+    self.wifi = wifi
     self.emit = emit
     super.init()
   }
@@ -134,10 +222,18 @@ private final class PlaudSdkController: NSObject, PlaudDeviceAgentProtocol {
     let userId = options.userId
     DispatchQueue.main.async {
       self.userId = userId
+      self.wifi.userId = userId
       let agent = PlaudDeviceAgent.shared
       agent.delegate = self
       agent.initSDK(userAccessToken: options.userAccessToken, customDomain: options.customDomain)
       promise.resolve(nil)
+    }
+  }
+
+  /// Release the process-wide delegate on module teardown, but only if it is still ours.
+  func detach() {
+    if PlaudDeviceAgent.shared.delegate === self {
+      PlaudDeviceAgent.shared.delegate = nil
     }
   }
 
@@ -234,20 +330,21 @@ private final class PlaudSdkController: NSObject, PlaudDeviceAgentProtocol {
       promise.reject("ERR_PLAUD_ARGS", "sessionId is required")
       return
     }
-    let format = Self.exportFormat(from: options.format)
+    let format = plaudExportFormat(from: options.format)
     let channels = options.channels
     let sessionId = options.sessionId
     DispatchQueue.main.async {
-      let dir = FileManager.default
-        .urls(for: .documentDirectory, in: .userDomainMask)[0]
-        .appendingPathComponent("PlaudExports", isDirectory: true)
-      try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-
-      let bridge = ExportCallbackBridge(sessionId: sessionId, promise: promise, controller: self)
+      let bridge = ExportCallbackBridge(
+        sessionId: sessionId,
+        promise: promise,
+        emit: self.emit
+      ) { [weak self] finished in
+        DispatchQueue.main.async { self?.exportCallbacks.remove(finished) }
+      }
       self.exportCallbacks.insert(bridge)
       PlaudDeviceAgent.shared.exportAudio(
         sessionId: sessionId,
-        outputDir: dir.path,
+        outputDir: plaudExportsDirectory().path,
         format: format,
         channels: channels,
         callback: bridge
@@ -293,6 +390,15 @@ private final class PlaudSdkController: NSObject, PlaudDeviceAgentProtocol {
 
   func bleBind(sn: String?, status: Int, protVersion: Int, timezone: Int) {
     emit("bind", ["sn": sn, "status": status, "protVersion": protVersion])
+  }
+
+  /// The recorder has brought up (or failed to bring up) its Wi-Fi AP, and this carries the
+  /// credentials for it. It belongs to the Wi-Fi session, so hand it straight over.
+  func bleWiFiOpen(_ status: Int, _ wifiName: String, _ wholeName: String, _ wifiPass: String) {
+    wifi.handleBleWiFiOpen(status: status,
+                           wifiName: wifiName,
+                           wholeName: wholeName,
+                           wifiPass: wifiPass)
   }
 
   // MARK: - Recording (device-initiated: physical button / VAD)
@@ -353,53 +459,53 @@ private final class PlaudSdkController: NSObject, PlaudDeviceAgentProtocol {
     }
     return nil
   }
-
-  private static func exportFormat(from raw: String?) -> AudioExportFormat {
-    switch (raw ?? "mp3").lowercased() {
-    case "pcm": return .pcm
-    case "wav": return .wav
-    case "opus": return .opus
-    default: return .mp3
-    }
-  }
-
-  fileprivate func emitEvent(_ event: String, _ body: [String: Any?]) {
-    emit(event, body)
-  }
-
-  fileprivate func finishExport(_ bridge: ExportCallbackBridge) {
-    DispatchQueue.main.async { [weak self] in
-      self?.exportCallbacks.remove(bridge)
-    }
-  }
 }
 
 /// Adapts the SDK's per-call `AudioExportCallback` to the module: progress becomes an
-/// `exportProgress` event, completion/error resolves/rejects the originating Promise.
-private final class ExportCallbackBridge: NSObject, AudioExportCallback {
+/// `exportProgress` event, completion/error resolves/rejects the originating Promise. Shared by
+/// the BLE and the Wi-Fi export path — the Wi-Fi one additionally reports throughput, which is
+/// what lets the two produce identical results from a JS point of view.
+final class ExportCallbackBridge: NSObject, AudioExportCallback {
   private let sessionId: Int
   private let promise: Promise
-  private weak var controller: PlaudSdkController?
+  private let emit: (String, [String: Any?]) -> Void
+  private let emitsWifiProgress: Bool
+  private let onFinish: (ExportCallbackBridge) -> Void
 
-  init(sessionId: Int, promise: Promise, controller: PlaudSdkController) {
+  init(sessionId: Int,
+       promise: Promise,
+       emit: @escaping (String, [String: Any?]) -> Void,
+       emitsWifiProgress: Bool = false,
+       onFinish: @escaping (ExportCallbackBridge) -> Void) {
     self.sessionId = sessionId
     self.promise = promise
-    self.controller = controller
+    self.emit = emit
+    self.emitsWifiProgress = emitsWifiProgress
+    self.onFinish = onFinish
   }
 
   func onProgress(_ progress: Int, message: String) {
-    controller?.emitEvent("exportProgress", [
+    emit("exportProgress", [
       "sessionId": sessionId, "progress": progress, "message": message
+    ])
+    guard emitsWifiProgress else { return }
+    // 100 means the transfer is done and the local decode/transcode has begun, so there is no
+    // meaningful throughput left to report.
+    let converting = progress >= 100
+    emit("wifiTransferProgress", [
+      "sessionId": sessionId,
+      "progress": progress,
+      "speedKBps": converting ? 0 : PlaudWiFiAgent.shared.currentDownloadSpeedKBps
     ])
   }
 
   func onComplete(outputPath: String) {
     promise.resolve(["sessionId": sessionId, "outputPath": outputPath])
-    if let controller = controller { controller.finishExport(self) }
+    onFinish(self)
   }
 
   func onError(_ error: String) {
     promise.reject("ERR_PLAUD_EXPORT", error)
-    if let controller = controller { controller.finishExport(self) }
+    onFinish(self)
   }
 }

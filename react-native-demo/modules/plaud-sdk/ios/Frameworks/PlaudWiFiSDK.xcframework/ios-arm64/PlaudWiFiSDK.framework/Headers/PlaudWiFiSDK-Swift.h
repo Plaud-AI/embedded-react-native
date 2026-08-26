@@ -402,7 +402,7 @@ SWIFT_CLASS_PROPERTY(@property (nonatomic, class, readonly, strong) WiFiAgent * 
 ///
 /// \param overtimeSec 超时时间，默认60秒
 ///
-- (void)connectWifi:(NSString * _Nonnull)ssid :(NSString * _Nonnull)passphrase :(NSInteger)overtimeSec :(BOOL)needRetry SWIFT_AVAILABILITY(ios,introduced=11.0);
+- (void)connectWifi:(NSString * _Nonnull)ssid :(NSString * _Nonnull)passphrase :(NSInteger)overtimeSec :(BOOL)needRetry :(NSInteger)hotspotCheckDelaySec :(NSInteger)stallTimeoutSec SWIFT_AVAILABILITY(ios,introduced=11.0);
 /// 取消轮询连接 wifi
 - (void)cancelConnectWifi;
 /// 清理所有WiFi配置缓存
@@ -483,6 +483,7 @@ SWIFT_CLASS_PROPERTY(@property (nonatomic, class, readonly, strong) WiFiAgent * 
 
 
 @class BleFile;
+@class WiFiConnectEvent;
 
 SWIFT_PROTOCOL("_TtP12PlaudWiFiSDK17WiFiAgentProtocol_")
 @protocol WiFiAgentProtocol
@@ -538,6 +539,11 @@ SWIFT_PROTOCOL("_TtP12PlaudWiFiSDK17WiFiAgentProtocol_")
 /// \param status 删除结果 0 成功，>0 失败原因
 ///
 - (void)wifiFileDelete:(NSInteger)sessionId :(NSInteger)status;
+@optional
+/// iOS已成功连接到目标WiFi热点（设备开始监听端口前触发，对应Android的wifiConnected回调）
+/// 声明为 optional 以保持向后兼容，避免历史 conformer 必须实现
+- (void)wifiConnected;
+@required
 /// 客户端异常断开，等待重连
 /// 请设置 BleAgent.shared.setWiFiState(false)
 - (void)wifiClientFail;
@@ -571,7 +577,49 @@ SWIFT_PROTOCOL("_TtP12PlaudWiFiSDK17WiFiAgentProtocol_")
 - (void)wifiTips:(NSInteger)tips;
 - (void)penRequestOTADataWithStart:(NSInteger)start end:(NSInteger)end payloadSize:(NSInteger)payloadSize uid:(NSInteger)uid sendRatePPS:(NSInteger)sendRatePPS;
 - (void)wifiOTAStatus:(NSInteger)status :(NSInteger)uid;
+@optional
+/// 连接状态变更回调
+/// 本期仅用于「连接停滞」回抛（trigger=stallThreshold，配合 App 传入的阈值）；
+/// 其余连接阶段（wifiConnected/handshaking/… ）为占位，后续接入。
+/// optional 保证历史 conformer 无需实现，向后兼容。
+- (void)onWiFiConnectStateChanged:(WiFiConnectEvent * _Nonnull)event;
 @end
+
+enum WiFiConnectStage : NSInteger;
+enum WiFiConnectReason : NSInteger;
+
+/// 连接状态事件：阶段 + 原因。
+SWIFT_CLASS("_TtC12PlaudWiFiSDK16WiFiConnectEvent")
+@interface WiFiConnectEvent : NSObject
+@property (nonatomic, readonly) enum WiFiConnectStage stage;
+@property (nonatomic, readonly) enum WiFiConnectReason reason;
+- (nonnull instancetype)initWithStage:(enum WiFiConnectStage)stage reason:(enum WiFiConnectReason)reason OBJC_DESIGNATED_INITIALIZER;
+/// 序列化为跨 channel 的 dictionary（native → Flutter），字段与设计文档一致。
+- (NSDictionary<NSString *, id> * _Nonnull)toDictionary SWIFT_WARN_UNUSED_RESULT;
+- (nonnull instancetype)init SWIFT_UNAVAILABLE;
++ (nonnull instancetype)new SWIFT_UNAVAILABLE_MSG("-init is unavailable");
+@end
+
+/// 事件原因。说明失败/超时/停滞等「为什么」；正常进展为 none。
+typedef SWIFT_ENUM(NSInteger, WiFiConnectReason, open) {
+  WiFiConnectReasonNone = 0,
+  WiFiConnectReasonPersonalHotspot = 1,
+  WiFiConnectReasonConnectSlow = 2,
+  WiFiConnectReasonTimeout = 3,
+  WiFiConnectReasonFailed = 4,
+};
+
+/// 连接阶段。rawValue(code) 为三端契约锚点，只可末尾追加，不可改值/改序。
+typedef SWIFT_ENUM(NSInteger, WiFiConnectStage, open) {
+  WiFiConnectStageWifiIdle = 0,
+  WiFiConnectStageWifiConnecting = 1,
+  WiFiConnectStageWifiConnected = 2,
+  WiFiConnectStageWifiHandshaking = 3,
+  WiFiConnectStageWifiSocketConnected = 4,
+  WiFiConnectStageWifiReady = 5,
+  WiFiConnectStageWifiConnectFailed = 6,
+  WiFiConnectStageWifiClosed = 7,
+};
 
 #endif
 #if __has_attribute(external_source_symbol)

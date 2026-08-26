@@ -531,6 +531,10 @@ SWIFT_CLASS("_TtC19PlaudDeviceBasicSDK16PlaudDeviceAgent")
 @interface PlaudDeviceAgent : NSObject
 SWIFT_CLASS_PROPERTY(@property (nonatomic, class, readonly, strong) PlaudDeviceAgent * _Nonnull shared;)
 + (PlaudDeviceAgent * _Nonnull)shared SWIFT_WARN_UNUSED_RESULT;
+/// 当前 BLE 下载速度(KB/s)。与 <code>PlaudWiFiAgent.currentDownloadSpeedKBps</code> 对称，App 两端可用同一套读取逻辑。
+@property (nonatomic, readonly) double currentDownloadSpeedKBps;
+/// 格式化下载速度字符串(如 “1.2 MB/s” / “300.0 KB/s”)。
+- (NSString * _Nonnull)getFormattedDownloadSpeed SWIFT_WARN_UNUSED_RESULT;
 @property (nonatomic, strong) BleDevice * _Nullable recentConnectDevice;
 @property (nonatomic, readonly) NSInteger sceneFlag;
 /// WiFi 快传进行中标记，抑制 BLE 断连时的缓存清除和自动重连
@@ -580,7 +584,9 @@ SWIFT_CLASS_PROPERTY(@property (nonatomic, class, readonly, strong) PlaudDeviceA
 + (NSString * _Nonnull)getTestAppSecret:(BOOL)beta SWIFT_WARN_UNUSED_RESULT;
 - (void)depairWithClear:(BOOL)clear;
 - (void)setDeviceWiFiWithOpen:(BOOL)open;
-/// 结束 WiFi 快传模式（WiFi 断开后调用，恢复 BLE 正常行为）
+/// 结束 WiFi 快传模式（WiFi 断开后调用，恢复 BLE 正常行为）。
+/// 1.0.10 起：BLE 可用时会同时请求设备关闭热点（等效自动补调 setDeviceWiFi(false)），
+/// 避免接入方漏调导致设备滞留 WiFi 模式直至固件超时（约 2 分钟）。
 - (void)endWiFiTransfer;
 - (void)setDeviceBindingWithToken:(NSString * _Nonnull)token;
 /// Start scan
@@ -897,6 +903,8 @@ enum PlaudFirmwarePhase : NSInteger;
 - (void)bleOtaDataSendFail;
 - (void)bleRateWithLossRate:(double)lossRate rate:(NSInteger)rate instantRate:(NSInteger)instantRate;
 - (void)bleSetActiveWithStatus:(NSInteger)status;
+- (void)bleIBeaconWakeupEnabled:(NSInteger)value;
+- (void)bleSyncOtaFileInfoWithUid:(uint32_t)uid start:(uint32_t)start end:(uint32_t)end toVersion:(uint32_t)toVersion toVersionType:(uint8_t)toVersionType isSilent:(NSInteger)isSilent packetCheckOk:(NSInteger)packetCheckOk;
 - (void)bleHeartbeatWithStatus:(NSInteger)status;
 - (void)bleBatteryMode:(NSInteger)mode;
 - (void)bleDeviceStatusWithStatus:(NSArray<NSNumber *> * _Nonnull)status;
@@ -1423,6 +1431,10 @@ SWIFT_CLASS_PROPERTY(@property (nonatomic, class, readonly, strong) PlaudLogConf
 /// 格式：ChaCha20(ZIP(log files + sdk_info.txt))
 SWIFT_CLASS_NAMED("PlaudLogEncryption")
 @interface PlaudLogEncryption : NSObject
+/// 导出加密日志包（.plaud）。<em>失败时抛出 [PlaudLogExportError]，明确原因</em>，不再静默返回 nil。
+/// ObjC 调用：<code>[PlaudLogEncryption exportEncryptedLogFileAndReturnError:&error]</code>，失败看 <code>error.localizedDescription</code>。
++ (NSURL * _Nullable)exportEncryptedLogFileAndReturnError:(NSError * _Nullable * _Nullable)error SWIFT_WARN_UNUSED_RESULT;
+/// 兼容旧接口：失败返回 nil（无原因）。新接入方请改用 <code>exportEncryptedLogFile()</code>。
 + (NSURL * _Nullable)exportEncryptedLogs SWIFT_WARN_UNUSED_RESULT;
 - (nonnull instancetype)init OBJC_DESIGNATED_INITIALIZER;
 @end
@@ -1571,15 +1583,7 @@ SWIFT_CLASS_PROPERTY(@property (nonatomic, class, readonly, strong) PlaudWiFiAge
 /// \param overtimeSec Timeout duration, default 30 seconds
 ///
 - (void)listenPort:(NSString * _Nonnull)ssid :(NSInteger)overtimeSec;
-/// Connect to specified WiFi using WiFi name and password
-/// iOS 11.0 and above use this method for direct WiFi connection, earlier versions need popup to guide user to settings for manual connection
-/// \param ssid WiFi name
-///
-/// \param passphrase Password
-///
-/// \param overtimeSec Timeout duration, default 60 seconds
-///
-- (void)connectWifi:(NSString * _Nonnull)ssid :(NSString * _Nonnull)passphrase :(NSInteger)overtimeSec SWIFT_AVAILABILITY(ios,introduced=11.0);
+- (void)connectWifi:(NSString * _Nonnull)ssid :(NSString * _Nonnull)passphrase :(NSInteger)overtimeSec;
 /// Disconnect
 - (void)disconnect;
 /// Check if currently connected to specified WiFi
@@ -1626,6 +1630,9 @@ SWIFT_CLASS_PROPERTY(@property (nonatomic, class, readonly, strong) PlaudWiFiAge
 /// \param scene Scene, default 1
 ///
 - (void)deleteFile:(NSInteger)sessionId :(NSInteger)scene;
+/// 批量下载全部文件(命名对齐 Android <code>getWifiAgent().downloadAllFiles()</code>)。等价于 <code>startDownloadAll()</code>。
+/// 进度走 <code>wifiDownloadAllProgress</code>，完成走 <code>wifiDownloadAllCompleted</code>。
+- (void)downloadAllFiles;
 /// Start downloading all files
 /// First get file list, then download one by one
 - (void)startDownloadAll;
@@ -1688,6 +1695,16 @@ SWIFT_PROTOCOL("_TtP19PlaudDeviceBasicSDK22PlaudWiFiAgentProtocol_")
 /// \param connected Whether connection succeeded
 ///
 - (void)wifiConnectionStatus:(NSString * _Nonnull)ssid :(BOOL)connected;
+/// 加入设备热点(NEHotspotConfigurationManager)的结果。
+/// 失败时给出<em>明确原因</em>(对标接入方诉求)：errorCode 为 NEHotspotConfigurationError 原始码
+/// (如 invalidWPAKey 密码错 / userDenied 被拒 / alreadyAssociated 已连接 等)，message 为可读说明。
+/// \param success 是否加入成功
+///
+/// \param errorCode 失败时的 NEHotspotConfigurationError 原始码(成功为 0)
+///
+/// \param message 可读原因(成功为空串)
+///
+- (void)wifiConnectResult:(BOOL)success :(NSInteger)errorCode :(NSString * _Nonnull)message;
 /// Battery level and voltage
 /// \param power Battery level, percentage
 ///

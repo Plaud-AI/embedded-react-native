@@ -99,6 +99,7 @@ public typealias Int2Void = (Swift.Int) -> Swift.Void
   @objc func bleRawWaveEnabled(_ value: Swift.Int)
   @objc func bleRecordingAfterDisConnetEnabled(_ value: Swift.Int)
   @objc func bleSyncWhenIdleEnabled(_ value: Swift.Int)
+  @objc func bleIBeaconWakeupEnabled(_ value: Swift.Int)
   @objc func bleFindMyState(_ value: Swift.Int)
   @objc func bleVPUCLKState(_ value: Swift.Int)
   @objc func bleStopRecordingAfterCharging(_ value: Swift.Int)
@@ -139,6 +140,7 @@ public typealias Int2Void = (Swift.Int) -> Swift.Void
   @objc func blePrivacy(privacy: Swift.Int)
   @objc func bleClearAllFile(status: Swift.Int)
   @objc func bleDeviceStatus(status: [Swift.UInt8])
+  @objc func bleSyncOtaFileInfo(uid: Swift.UInt32, start: Swift.UInt32, end: Swift.UInt32, toVersion: Swift.UInt32, toVersionType: Swift.UInt8, isSilent: Swift.Int, packetCheckOk: Swift.Int)
   @objc func bleNewFeature(data: Foundation.Data)
   @objc func bleAlarmRec(start: Swift.Int, duration: Swift.Int, repeatMode: Swift.Int)
   @objc func bleSetActive(status: Swift.Int)
@@ -214,6 +216,7 @@ public typealias Int2Void = (Swift.Int) -> Swift.Void
   @objc public var isOnlyOne: Swift.Bool {
     get
   }
+  public var scanServiceFilter: [CoreBluetooth.CBUUID]?
   public var userToken: Swift.String? {
     get
   }
@@ -326,6 +329,8 @@ public typealias Int2Void = (Swift.Int) -> Swift.Void
   @objc public func setRecordingAfterDisConnetEnabled(value: Swift.Int)
   @objc public func readSyncWhenIdleEnabled()
   @objc public func setSyncWhenIdleEnabled(value: Swift.Int)
+  @objc public func readIBeaconWakeupEnabled()
+  @objc public func setIBeaconWakeupEnabled(value: Swift.Int)
   @objc public func setFindMyState(value: Swift.Int)
   @objc public func readFindMyState()
   @objc public func setVPUCLK(value: Swift.Int)
@@ -334,11 +339,12 @@ public typealias Int2Void = (Swift.Int) -> Swift.Void
   @objc public func readStopRecordingAfterCharging()
   @objc public func setBleName(name: Swift.String)
   @objc public func getDeviceLogList(logType: Swift.Int)
-  @objc public func startSyncDeviceLogFile(logType: Swift.Int)
+  @objc public func startSyncDeviceLogFile(logType: Swift.Int, logIndex: Swift.Int)
   @objc public func stopSyncDeviceLogFile()
-  @objc public func deleteDeviceLogFile(logType: Swift.Int)
+  @objc public func deleteDeviceLogFile(logType: Swift.Int, logIndex: Swift.Int)
   @objc public func readBleName()
-  @objc public func operateWiFi(open: Swift.Bool, isOTA: Swift.Bool)
+  @objc public func operateWiFi(open: Swift.Bool, isOTA: Swift.Bool = false, hotspotPassword: Swift.String? = nil)
+  @objc(operateWiFiWithOpen:isOTA:) public func operateWiFiLegacy(open: Swift.Bool, isOTA: Swift.Bool)
   @objc public func readGlassData(uid: Swift.Int)
   @objc public func clearGlassData()
   @objc public func readAutoClear()
@@ -356,8 +362,10 @@ public typealias Int2Void = (Swift.Int) -> Swift.Void
   @objc public func getMarking(_ sessionId: Swift.Int)
   @objc public func getRecordMarkingTags(uid: Swift.Int, startTimestamp: Swift.Int, endTimestamp: Swift.Int)
   @objc public func pushFotaInfo(_ uid: Swift.Int, _ fromVersion: Swift.String, _ toVersion: Swift.String, _ thirdVersion: Swift.Int = 0, _ fileSize: Swift.Int, _ crc: Swift.Int)
-  public func pushFotaInfo(_ uid: Swift.Int, _ fromVersion: Swift.Int, _ fromVersionType: Swift.Character, _ toVersion: Swift.Int, _ toVersionType: Swift.Character, _ thirdVersion: Swift.Int = 0, _ fileSize: Swift.Int, _ crc: Swift.Int)
+  public func pushFotaInfo(_ uid: Swift.Int, _ fromVersion: Swift.String, _ toVersion: Swift.String, _ thirdVersion: Swift.Int = 0, _ fileSize: Swift.Int, _ crc: Swift.Int, _ isSilent: Swift.Bool)
+  public func pushFotaInfo(_ uid: Swift.Int, _ fromVersion: Swift.Int, _ fromVersionType: Swift.Character, _ toVersion: Swift.Int, _ toVersionType: Swift.Character, _ thirdVersion: Swift.Int = 0, _ fileSize: Swift.Int, _ crc: Swift.Int, _ isSilent: Swift.Bool = false)
   @objc public func pushFotaInfo(_ uid: Swift.Int, _ fromVersion: Swift.Int, _ fromVersionType: Swift.String, _ toVersion: Swift.Int, _ toVersionType: Swift.String, _ thirdVersion: Swift.Int = 0, _ fileSize: Swift.Int, _ crc: Swift.Int)
+  public func pushFotaInfo(_ uid: Swift.Int, _ fromVersion: Swift.Int, _ fromVersionType: Swift.String, _ toVersion: Swift.Int, _ toVersionType: Swift.String, _ thirdVersion: Swift.Int = 0, _ fileSize: Swift.Int, _ crc: Swift.Int, _ isSilent: Swift.Bool)
   @objc public func pushFotaComplete(_ uid: Swift.Int, _ status: Swift.Int)
   @objc public func pushFotaPack(_ offset: Swift.Int, packData: Foundation.Data, postDelayUs: Foundation.NSNumber?)
   @available(iOS 11.0, *)
@@ -395,9 +403,11 @@ public typealias Int2Void = (Swift.Int) -> Swift.Void
   @objc public func getSDFLASHCID()
   @objc public func getNewFeature(_ data: Foundation.Data)
   @objc public func getDeviceStatus()
+  @objc public func getSyncOtaFileInfo()
   @objc deinit
 }
 extension PlaudBleSDK.BleAgent : CoreBluetooth.CBCentralManagerDelegate {
+  @objc dynamic public func centralManager(_ central: CoreBluetooth.CBCentralManager, willRestoreState dict: [Swift.String : Any])
   @objc dynamic public func centralManagerDidUpdateState(_ central: CoreBluetooth.CBCentralManager)
   @objc dynamic public func centralManager(_ central: CoreBluetooth.CBCentralManager, didDiscover peripheral: CoreBluetooth.CBPeripheral, advertisementData: [Swift.String : Any], rssi RSSI: Foundation.NSNumber)
   @objc dynamic public func centralManager(_ central: CoreBluetooth.CBCentralManager, didConnect peripheral: CoreBluetooth.CBPeripheral)
@@ -604,6 +614,7 @@ public enum CommonType : Swift.Int {
   case FindMyState
   case VPUCLK
   case StopRecordAfterCharging
+  case IBeaconWakeup
   public init?(rawValue: Swift.Int)
   public typealias RawValue = Swift.Int
   public var rawValue: Swift.Int {
@@ -1202,6 +1213,7 @@ public protocol BleFeatureProvider {
 }
 @_hasMissingDesignatedInitializers public class PenBleConfig {
   public static var featureProvider: (any PlaudBleSDK.BleFeatureProvider)?
+  weak public static var eventReporter: (any PlaudBleSDK.BleEventReporter)?
   @objc deinit
 }
 @_inheritsConvenienceInitializers @objc open class UpdateInfo : ObjectiveC.NSObject {
@@ -1225,7 +1237,7 @@ public protocol BleFeatureProvider {
   @objc public func toString() -> Swift.String
   @objc deinit
 }
-@objc(PublicKey) public class _objc_PublicKey : ObjectiveC.NSObject, PlaudBleSDK.Key {
+@objc(SwiftyRSAPublicKey) public class _objc_PublicKey : ObjectiveC.NSObject, PlaudBleSDK.Key {
   @objc public var reference: Security.SecKey {
     @objc get
   }
@@ -1321,6 +1333,9 @@ public protocol BleFeatureProvider {
   @objc public init(data: Foundation.Data)
   @objc required public init(base64Encoded base64String: Swift.String) throws
   @objc deinit
+}
+public protocol BleEventReporter : AnyObject {
+  func reportEvent(name: Swift.String, attributes: [Swift.String : Any])
 }
 extension PlaudBleSDK.BleAgent.ConnectStage : Swift.Equatable {}
 extension PlaudBleSDK.BleAgent.ConnectStage : Swift.Hashable {}

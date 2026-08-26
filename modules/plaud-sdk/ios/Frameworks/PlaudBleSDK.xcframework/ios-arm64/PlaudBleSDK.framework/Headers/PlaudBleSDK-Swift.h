@@ -604,6 +604,13 @@ SWIFT_CLASS_PROPERTY(@property (nonatomic, class, readonly, strong) BleAgent * _
 /// \param value：0：关闭 1：开启 
 ///
 - (void)setSyncWhenIdleEnabledWithValue:(NSInteger)value;
+/// 获取 iBeacon 唤醒 APP 开关
+/// @see bleIBeaconWakeupEnabled
+- (void)readIBeaconWakeupEnabled;
+/// 设置 iBeacon 唤醒 APP 开关
+/// \param value：0：关闭 1：开启 
+///
+- (void)setIBeaconWakeupEnabledWithValue:(NSInteger)value;
 /// 设置 设备 findmy 状态
 /// \param value 
 /// 0：未绑定状态 - 关闭广播
@@ -638,17 +645,23 @@ SWIFT_CLASS_PROPERTY(@property (nonatomic, class, readonly, strong) BleAgent * _
 /// 获取设备文件列表
 - (void)getDeviceLogListWithLogType:(NSInteger)logType;
 /// 开始获取设备文件
-- (void)startSyncDeviceLogFileWithLogType:(NSInteger)logType;
+- (void)startSyncDeviceLogFileWithLogType:(NSInteger)logType logIndex:(NSInteger)logIndex;
 /// 停止获取设备文件列表
 - (void)stopSyncDeviceLogFile;
 /// 删除设备文件
-- (void)deleteDeviceLogFileWithLogType:(NSInteger)logType;
+- (void)deleteDeviceLogFileWithLogType:(NSInteger)logType logIndex:(NSInteger)logIndex;
 /// 获取 ble 名称
 /// @see    bleName
 - (void)readBleName;
 /// app端请求开启或者关闭wifi
 /// \param open 开启还是关闭
 ///
+/// \param isOTA 是否OTA场景
+///
+/// \param hotspotPassword 热点密码（8 字节 ASCII），仅 open=true 时下发；为 nil/空/不合法时不附带密码
+///
+- (void)operateWiFiWithOpen:(BOOL)open isOTA:(BOOL)isOTA hotspotPassword:(NSString * _Nullable)hotspotPassword;
+/// 旧版兼容包装：保持 ObjC selector <code>operateWiFiWithOpen:isOTA:</code> 不变，避免破坏已有二进制调用方
 - (void)operateWiFiWithOpen:(BOOL)open isOTA:(BOOL)isOTA;
 /// 获取记录报表
 /// \param uid 区分连续请求
@@ -743,7 +756,7 @@ SWIFT_CLASS_PROPERTY(@property (nonatomic, class, readonly, strong) BleAgent * _
 /// \param endTimestamp 结束时间戳
 ///
 - (void)getRecordMarkingTagsWithUid:(NSInteger)uid startTimestamp:(NSInteger)startTimestamp endTimestamp:(NSInteger)endTimestamp;
-/// 通知录音笔有版本升级
+/// 通知录音笔有版本升级（向后兼容重载，isSilent 默认为 false）
 /// \param uid 命令区分标识
 ///
 /// \param fromVersion 现在的版本 T0012 或者 V0012 这样的格式
@@ -759,7 +772,7 @@ SWIFT_CLASS_PROPERTY(@property (nonatomic, class, readonly, strong) BleAgent * _
 /// @see    回调bleFotaPackReq
 ///
 - (void)pushFotaInfo:(NSInteger)uid :(NSString * _Nonnull)fromVersion :(NSString * _Nonnull)toVersion :(NSInteger)thirdVersion :(NSInteger)fileSize :(NSInteger)crc;
-/// 通知录音笔有版本升级
+/// 通知录音笔有版本升级（向后兼容重载，isSilent 默认为 false）
 /// 目标版本一定要大于原版本
 /// \param uid 命令区分标识
 ///
@@ -922,6 +935,8 @@ SWIFT_CLASS_PROPERTY(@property (nonatomic, class, readonly, strong) BleAgent * _
 - (void)getNewFeature:(NSData * _Nonnull)data;
 /// 获取设备状态
 - (void)getDeviceStatus;
+/// 查询设备 OTA 下载进度（cmd 151）
+- (void)getSyncOtaFileInfo;
 @end
 
 
@@ -947,10 +962,12 @@ SWIFT_PROTOCOL("_TtP11PlaudBleSDK20JXPcmProcessDelegate_")
 @end
 
 
+
 @class CBCentralManager;
 @class CBPeripheral;
 
 @interface BleAgent (SWIFT_EXTENSION(PlaudBleSDK)) <CBCentralManagerDelegate>
+- (void)centralManager:(CBCentralManager * _Nonnull)central willRestoreState:(NSDictionary<NSString *, id> * _Nonnull)dict;
 /// 判断手机蓝牙状态
 /// mark - sdk实现系统回调，app不要调用
 - (void)centralManagerDidUpdateState:(CBCentralManager * _Nonnull)central;
@@ -967,7 +984,6 @@ SWIFT_PROTOCOL("_TtP11PlaudBleSDK20JXPcmProcessDelegate_")
 /// mark - sdk实现系统回调，app不要调用
 - (void)centralManager:(CBCentralManager * _Nonnull)central didDisconnectPeripheral:(CBPeripheral * _Nonnull)peripheral error:(NSError * _Nullable)error;
 @end
-
 
 @class NSURLSession;
 @class NSURLAuthenticationChallenge;
@@ -1168,6 +1184,10 @@ SWIFT_PROTOCOL("_TtP11PlaudBleSDK16BleAgentProtocol_")
 /// \param value 0：关闭    1：开启
 ///
 - (void)bleSyncWhenIdleEnabled:(NSInteger)value;
+/// iBeacon 唤醒 APP 开关
+/// \param value 0：关闭    1：开启
+///
+- (void)bleIBeaconWakeupEnabled:(NSInteger)value;
 /// findmy 状态
 /// \param value 
 /// 0：未绑定状态 - 关闭广播
@@ -1418,6 +1438,8 @@ SWIFT_PROTOCOL("_TtP11PlaudBleSDK16BleAgentProtocol_")
 /// bit8: WiFiota下载中, bit9: OTA升级中
 /// 注意：返回原始数据，应用层可自行解析，支持设备后续新增状态位
 - (void)bleDeviceStatusWithStatus:(NSArray<NSNumber *> * _Nonnull)status;
+/// OTA下载进度（cmd 151）
+- (void)bleSyncOtaFileInfoWithUid:(uint32_t)uid start:(uint32_t)start end:(uint32_t)end toVersion:(uint32_t)toVersion toVersionType:(uint8_t)toVersionType isSilent:(NSInteger)isSilent packetCheckOk:(NSInteger)packetCheckOk;
 /// 设备支持的feature功能
 - (void)bleNewFeatureWithData:(NSData * _Nonnull)data;
 /// 定时录音
@@ -2216,7 +2238,7 @@ SWIFT_PROTOCOL("_TtP11PlaudBleSDK11OtaProtocol_")
 /// ota通知
 /// \param uid 标识
 ///
-/// \param status 状态 0 正常，1. 升级失败 2. 版本信息不匹配  3.FLASH写失败 4.文件太大 5.尝试次数过多  6. U盘模式；7.正在录音； 8. U盘剩余空间不足；  9. 正在工作中; 10. G101眼镜仅在充电模式允许升级；11. G101眼镜电池电量不足；12. G101眼镜收到升级协议并准备调整到OTA_MODE; 255：模式不对(录音笔不在录音模式，黑黎三段式开关特有)
+/// \param status 状态 0 正常，1. 升级失败 2. 版本信息不匹配  3.FLASH写失败 4.文件太大 5.尝试次数过多  6. U盘模式；7.正在录音； 8. U盘剩余空间不足；  9. 正在工作中; 10. G101眼镜仅在充电模式允许升级；11. G101眼镜电池电量不足；12. G101眼镜收到升级协议并准备调整到OTA_MODE; 13. 静默OTA传输成功(固件已接收,下次重启升级); 255：模式不对(录音笔不在录音模式，黑黎三段式开关特有)
 ///
 /// \param errmsg 协议版本4，如果升级成功，这里返回升级后的版本；如果失败，依然返回错误信息。
 ///
@@ -2232,7 +2254,7 @@ SWIFT_PROTOCOL("_TtP11PlaudBleSDK11OtaProtocol_")
 /// ota包接收完成
 /// \param uid 标识
 ///
-/// \param status 状态 0 正常，1. 升级失败 2. 版本信息不匹配  3.FLASH写失败 4.文件太大 5尝试次数过多  6. U盘模式；7.正在录音； 8. U盘剩余空间不足; 9. 正在工作中; 10. G101眼镜仅在充电模式允许升级；11. G101眼镜电池电量不足；12. G101眼镜收到升级协议并准备调整到OTA_MODE; 255：模式不对(录音笔不在录音模式，黑黎三段式开关特有)
+/// \param status 状态 0 正常，1. 升级失败 2. 版本信息不匹配  3.FLASH写失败 4.文件太大 5尝试次数过多  6. U盘模式；7.正在录音； 8. U盘剩余空间不足; 9. 正在工作中; 10. G101眼镜仅在充电模式允许升级；11. G101眼镜电池电量不足；12. G101眼镜收到升级协议并准备调整到OTA_MODE; 13. 静默OTA传输成功(固件已接收,下次重启升级); 255：模式不对(录音笔不在录音模式，黑黎三段式开关特有)
 ///
 /// \param errmsg 协议版本4，如果升级成功，这里返回升级后的版本；如果失败，依然返回错误信息。
 ///
@@ -2425,7 +2447,7 @@ SWIFT_PROTOCOL("_TtP11PlaudBleSDK14VolumeProtocol_")
 - (void)onVolumeWithSec:(NSInteger)sec volume:(NSInteger)volume;
 @end
 
-@class PublicKey;
+@class SwiftyRSAPublicKey;
 @class EncryptedMessage;
 @class PrivateKey;
 enum DigestType : NSInteger;
@@ -2440,9 +2462,9 @@ SWIFT_CLASS_NAMED("_objc_ClearMessage")
 - (nullable instancetype)initWithString:(NSString * _Nonnull)string using:(NSUInteger)rawEncoding error:(NSError * _Nullable * _Nullable)error OBJC_DESIGNATED_INITIALIZER;
 - (nullable instancetype)initWithBase64Encoded:(NSString * _Nonnull)base64String error:(NSError * _Nullable * _Nullable)error OBJC_DESIGNATED_INITIALIZER;
 - (NSString * _Nullable)stringWithEncoding:(NSUInteger)rawEncoding error:(NSError * _Nullable * _Nullable)error SWIFT_WARN_UNUSED_RESULT;
-- (EncryptedMessage * _Nullable)encryptedWith:(PublicKey * _Nonnull)key padding:(SecPadding)padding error:(NSError * _Nullable * _Nullable)error SWIFT_WARN_UNUSED_RESULT;
+- (EncryptedMessage * _Nullable)encryptedWith:(SwiftyRSAPublicKey * _Nonnull)key padding:(SecPadding)padding error:(NSError * _Nullable * _Nullable)error SWIFT_WARN_UNUSED_RESULT;
 - (Signature * _Nullable)signedWith:(PrivateKey * _Nonnull)key digestType:(enum DigestType)digestType error:(NSError * _Nullable * _Nullable)error SWIFT_WARN_UNUSED_RESULT;
-- (VerificationResult * _Nullable)verifyWith:(PublicKey * _Nonnull)key signature:(Signature * _Nonnull)signature digestType:(enum DigestType)digestType error:(NSError * _Nullable * _Nullable)error SWIFT_WARN_UNUSED_RESULT;
+- (VerificationResult * _Nullable)verifyWith:(SwiftyRSAPublicKey * _Nonnull)key signature:(Signature * _Nonnull)signature digestType:(enum DigestType)digestType error:(NSError * _Nullable * _Nullable)error SWIFT_WARN_UNUSED_RESULT;
 - (nonnull instancetype)init SWIFT_UNAVAILABLE;
 + (nonnull instancetype)new SWIFT_UNAVAILABLE_MSG("-init is unavailable");
 @end
@@ -2480,7 +2502,7 @@ SWIFT_CLASS_NAMED("_objc_PrivateKey")
 
 
 SWIFT_CLASS_NAMED("_objc_PublicKey")
-@interface PublicKey : NSObject
+@interface SwiftyRSAPublicKey : NSObject
 @property (nonatomic, readonly) SecKeyRef _Nonnull reference;
 @property (nonatomic, readonly, copy) NSData * _Nullable originalData;
 - (NSString * _Nullable)pemStringAndReturnError:(NSError * _Nullable * _Nullable)error SWIFT_WARN_UNUSED_RESULT;
@@ -2492,7 +2514,7 @@ SWIFT_CLASS_NAMED("_objc_PublicKey")
 - (nullable instancetype)initWithPemEncoded:(NSString * _Nonnull)pemString error:(NSError * _Nullable * _Nullable)error OBJC_DESIGNATED_INITIALIZER;
 - (nullable instancetype)initWithPemNamed:(NSString * _Nonnull)pemName in:(NSBundle * _Nonnull)bundle error:(NSError * _Nullable * _Nullable)error OBJC_DESIGNATED_INITIALIZER;
 - (nullable instancetype)initWithDerNamed:(NSString * _Nonnull)derName in:(NSBundle * _Nonnull)bundle error:(NSError * _Nullable * _Nullable)error OBJC_DESIGNATED_INITIALIZER;
-+ (NSArray<PublicKey *> * _Nonnull)publicKeysWithPemEncoded:(NSString * _Nonnull)pemString SWIFT_WARN_UNUSED_RESULT;
++ (NSArray<SwiftyRSAPublicKey *> * _Nonnull)publicKeysWithPemEncoded:(NSString * _Nonnull)pemString SWIFT_WARN_UNUSED_RESULT;
 - (nonnull instancetype)init SWIFT_UNAVAILABLE;
 + (nonnull instancetype)new SWIFT_UNAVAILABLE_MSG("-init is unavailable");
 @end
